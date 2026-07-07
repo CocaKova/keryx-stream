@@ -1132,6 +1132,207 @@ def sessions_prune(
             db.close()
 
 
+# ---------------------------------------------------------------------------
+# Pet (Keryx 1.10) — the petdex mascot for the drawer header. Mirrors the
+# desktop/TUI `pet.info` payload built in tui_gateway/server.py, but reuses
+# only the engine (`agent.pet`): the phone renders the spritesheet itself.
+# Pets stay configured server-side (`display.pet.enabled` / `.slug`), so the
+# phone shows exactly the pet the desktop and TUI show.
+# ---------------------------------------------------------------------------
+
+
+def _pet_sheet_revision(spritesheet: Path) -> str:
+    """Stable revision id (`mtime_ns:size`) so clients can cache the sheet."""
+    try:
+        stat = spritesheet.stat()
+        return f"{stat.st_mtime_ns}:{stat.st_size}"
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        return "0:0"
+
+
+def pet_info(meta_only: bool = False) -> dict:
+    """Active-pet payload for `GET /keryx/pet`.
+
+    `meta_only` returns just enabled/slug/revision — a cheap probe the client
+    uses to skip re-downloading an unchanged ~2MB spritesheet payload.
+    Fail-open: any engine/config hiccup reports `{"enabled": False}` rather
+    than erroring — the pet is cosmetic.
+    """
+    try:
+        from agent.pet import constants, store
+        from hermes_cli.config import load_config
+
+        try:
+            cfg = load_config()
+            display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+        except Exception:  # noqa: BLE001
+            pet_cfg = {}
+
+        if not bool(pet_cfg.get("enabled")):
+            return {"enabled": False}
+        pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
+        if pet is None or not pet.exists:
+            return {"enabled": False}
+
+        revision = _pet_sheet_revision(pet.spritesheet)
+        out: Dict[str, Any] = {
+            "enabled": True,
+            "slug": pet.slug,
+            "displayName": pet.display_name,
+            "spritesheetRevision": revision,
+        }
+        if meta_only:
+            return out
+
+        import base64
+
+        raw = pet.spritesheet.read_bytes()
+        out.update({
+            "mime": "image/png" if pet.spritesheet.suffix.lower() == ".png" else "image/webp",
+            "spritesheetBase64": base64.standard_b64encode(raw).decode("ascii"),
+            "frameW": constants.FRAME_W,
+            "frameH": constants.FRAME_H,
+            "framesPerState": constants.FRAMES_PER_STATE,
+            "loopMs": constants.LOOP_MS,
+            "stateRows": _pet_state_rows(pet.spritesheet),
+            "framesByRow": _pet_row_frame_counts(pet.spritesheet),
+        })
+        return out
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        logger.debug("keryx: pet info unavailable", exc_info=True)
+        return {"enabled": False}
+
+
+def _pet_state_rows(spritesheet: Path) -> List[str]:
+    """Row taxonomy for the concrete sheet (legacy 8-row vs Codex 9-row)."""
+    from agent.pet import constants
+
+    try:
+        from PIL import Image
+
+        with Image.open(spritesheet) as image:
+            row_count = max(1, image.height // constants.FRAME_H)
+        return list(constants.state_rows_for_grid(row_count))
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        return list(constants.STATE_ROWS)
+
+
+def _pet_row_frame_counts(spritesheet: Path) -> Dict[str, int]:
+    """Real (padding-trimmed) frame count per concrete row name.
+
+    Ragged sheets pad short rows with transparent frames; animating into the
+    padding reads as the pet blinking out. Fail-open to `{}` — the client
+    falls back to its static `framesPerState`.
+    """
+    try:
+        from PIL import Image
+
+        from agent.pet import constants, render
+
+        with Image.open(spritesheet) as opened:
+            image = opened.convert("RGBA")
+        cols = max(1, image.width // constants.FRAME_W)
+        row_count = max(1, image.height // constants.FRAME_H)
+        rows = constants.state_rows_for_grid(row_count)
+        out: Dict[str, int] = {}
+        for row_idx, name in enumerate(rows[:row_count]):
+            top = row_idx * constants.FRAME_H
+            count = 0
+            for col in range(cols):
+                left = col * constants.FRAME_W
+                frame = image.crop((left, top, left + constants.FRAME_W, top + constants.FRAME_H))
+                if render._frame_is_blank(frame):
+                    break
+                count += 1
+            out[name] = count
+        return out
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        return {}
+
+
+def pet_gallery(local_only: bool = False) -> dict:
+    """Adoptable-pets list for the phone picker — mirrors tui_gateway `pet.gallery`.
+
+    Merges the petdex catalog with local install state. `local_only` skips the
+    remote manifest fetch (and warms it in the background) so the picker can
+    render the user's own pets instantly, then follow up with the full catalog
+    — the same two-phase load the desktop picker does. Fail-open: offline you
+    still get whatever is installed.
+    """
+    try:
+        from agent.pet import store
+
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+        except Exception:  # noqa: BLE001
+            pet_cfg = {}
+
+        installed = {p.slug: p for p in store.installed_pets()}
+
+        pets: List[dict] = []
+        seen: set = set()
+        try:
+            from agent.pet.manifest import fetch_manifest, prefetch
+
+            if local_only:
+                prefetch()
+            for entry in [] if local_only else fetch_manifest():
+                seen.add(entry.slug)
+                pets.append({
+                    "slug": entry.slug,
+                    "displayName": entry.display_name,
+                    "installed": entry.slug in installed,
+                    "spritesheetUrl": entry.spritesheet_url,
+                    # petdex's hand-picked set — the closest thing to a popularity
+                    # signal, so the picker can surface these first.
+                    "curated": "/curated/" in entry.spritesheet_url,
+                    "generated": entry.slug in installed and installed[entry.slug].generated,
+                })
+        except Exception as exc:  # noqa: BLE001 - offline: installed-only below
+            logger.debug("keryx: petdex manifest fetch failed: %s", exc)
+
+        for slug, pet in installed.items():
+            if slug not in seen:
+                pets.append({
+                    "slug": slug,
+                    "displayName": pet.display_name,
+                    "installed": True,
+                    "spritesheetUrl": "",
+                    "curated": False,
+                    "generated": pet.generated,
+                })
+
+        return {
+            "enabled": bool(pet_cfg.get("enabled")),
+            "active": str(pet_cfg.get("slug", "") or ""),
+            "pets": pets,
+        }
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        logger.debug("keryx: pet gallery unavailable", exc_info=True)
+        return {"enabled": False, "active": "", "pets": []}
+
+
+def pet_select(slug: str) -> Tuple[int, dict]:
+    """Adopt *slug* from the phone picker: install from petdex if needed, then
+    persist ``display.pet.slug`` + ``enabled`` — the exact `pet.select` path the
+    desktop picker takes (`store.install_pet` + `hermes_cli.pets._set_active`)."""
+    from agent.pet import store
+    from agent.pet.manifest import ManifestError
+    from hermes_cli.pets import _set_active
+
+    try:
+        pet = store.install_pet(slug)
+    except (store.PetStoreError, ManifestError) as exc:
+        return 502, {"error": {"message": f"could not adopt '{slug}': {exc}"}}
+    _set_active(slug)
+    return 200, {"ok": True, "slug": slug, "displayName": pet.display_name}
+
+
 def register_keryx_routes(router: Any, check_auth) -> None:
     """Single registrar for every /keryx/* route — api_server.py calls only
     this, so future routes ship in this module (copied wholesale by
@@ -1139,6 +1340,40 @@ def register_keryx_routes(router: Any, check_auth) -> None:
     router.add_get("/keryx/stream", make_stream_handler(check_auth))
     router.add_get("/keryx/capabilities", make_capabilities_handler(check_auth))
     router.add_get("/keryx/commands", make_commands_handler(check_auth))
+
+    def _pet(request, body):
+        meta = str(request.query.get("meta", "")).lower() in ("1", "true")
+        return 200, pet_info(meta_only=meta)
+
+    def _pets(request, body):
+        local_only = str(request.query.get("localOnly", "")).lower() in ("1", "true")
+        return 200, pet_gallery(local_only)
+
+    def _pet_select(request, body):
+        slug = str(body.get("slug") or "").strip()
+        if not slug:
+            raise ValueError("slug is required")
+        return pet_select(slug)
+
+    def _pet_thumb(request, body):
+        slug = str(request.query.get("slug", "")).strip()
+        if not slug:
+            raise ValueError("slug is required")
+        from agent.pet import store
+
+        # `url` lets not-yet-installed catalog pets get a preview; the store
+        # only fetches it when it points at petdex, never an arbitrary host.
+        data = store.thumbnail_png(slug, source_url=str(request.query.get("url", "")))
+        if not data:
+            return 200, {"ok": False, "slug": slug}
+        import base64
+
+        return 200, {"ok": True, "slug": slug, "thumbBase64": base64.standard_b64encode(data).decode("ascii")}
+
+    router.add_get("/keryx/pet", _make_json_handler(check_auth, _pet))
+    router.add_get("/keryx/pets", _make_json_handler(check_auth, _pets))
+    router.add_post("/keryx/pet/select", _make_json_handler(check_auth, _pet_select))
+    router.add_get("/keryx/pet/thumb", _make_json_handler(check_auth, _pet_thumb))
 
     def _board(kb, conn, request, body):
         return 200, kanban_board_snapshot(kb, conn)
