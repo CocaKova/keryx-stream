@@ -33,6 +33,18 @@ inactive (it logs a one-line notice).
 
 ## Install
 
+**One command** — clone and run the installer (symlinks the plugin into
+`~/.hermes/plugins/` and prints the config + token you still need):
+
+```bash
+git clone https://github.com/CocaKova/keryx-stream.git
+cd keryx-stream
+./install.sh            # or ./install.sh --copy to copy instead of symlink
+```
+
+<details>
+<summary>Manual alternatives</summary>
+
 **Directory install** — symlink (or copy) the package into your plugins dir:
 
 ```bash
@@ -44,6 +56,8 @@ ln -s "$PWD/keryx_stream" ~/.hermes/plugins/keryx_stream
 ```bash
 pip install keryx-stream          # or: pip install -e .
 ```
+
+</details>
 
 ## Configure
 
