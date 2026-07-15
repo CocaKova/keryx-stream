@@ -1,0 +1,147 @@
+"""The Keryx side-channel SSE server.
+
+A small self-contained aiohttp app the plugin runs on its own thread/loop — it
+adds NO routes to the gateway's api_server (plugins must not touch core), so it
+is fully decoupled. Routes:
+
+  GET  /keryx/stream?platform=<p>&chat_id=<id>  — transient SSE of one turn's
+       token deltas (event: delta / segment / reasoning / stop / ping).
+  GET  /keryx/toolsets?platform=<p>             — toolset view for the platform.
+  PUT  /keryx/toolsets/{name}                   — toggle one toolset.
+  GET  /keryx/health                            — liveness.
+
+All routes except health require ``Authorization: Bearer <token>``.
+"""
+from __future__ import annotations
+
+import asyncio
+import hmac
+import json
+import logging
+from typing import Optional
+
+from .hub import drain_coalesced, hub
+from . import toolsets as toolsets_mod
+
+logger = logging.getLogger("keryx_stream.server")
+
+
+def _unauthorized(web):
+    return web.json_response(
+        {"error": {"message": "Invalid or missing bearer token"}}, status=401
+    )
+
+
+def build_app(config) -> "object":
+    """Build the aiohttp Application for the given PluginConfig."""
+    from aiohttp import web
+
+    def check_auth(request: "web.Request") -> Optional["web.Response"]:
+        if not config.token:
+            # No token configured → refuse everything rather than serve open.
+            return _unauthorized(web)
+        header = request.headers.get("Authorization", "")
+        if not header.startswith("Bearer "):
+            return _unauthorized(web)
+        presented = header[7:].strip()
+        if not hmac.compare_digest(presented, config.token):
+            return _unauthorized(web)
+        return None
+
+    async def handle_health(request):
+        return web.json_response({"ok": True, "plugin": "keryx-stream"})
+
+    async def handle_stream(request: "web.Request") -> "web.StreamResponse":
+        auth_err = check_auth(request)
+        if auth_err is not None:
+            return auth_err
+        platform = request.query.get("platform", config.default_platform)
+        chat_id = request.query.get("chat_id", "").strip()
+        if not chat_id:
+            return web.json_response(
+                {"error": {"message": "chat_id is required"}}, status=400
+            )
+
+        resp = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await resp.prepare(request)
+        sub = hub.subscribe(platform, chat_id)
+        try:
+            while True:
+                try:
+                    first = await asyncio.wait_for(sub.queue.get(), timeout=20.0)
+                except asyncio.TimeoutError:
+                    await resp.write(b"event: ping\ndata: {}\n\n")
+                    continue
+                frames, stop = drain_coalesced(sub.queue, first)
+                for event, text in frames:
+                    payload = json.dumps({"text": text} if text is not None else {})
+                    await resp.write(
+                        f"event: {event}\ndata: {payload}\n\n".encode("utf-8")
+                    )
+                if stop:
+                    break  # transient channel: one turn per subscription
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        finally:
+            hub.unsubscribe(platform, chat_id, sub)
+        try:
+            await resp.write_eof()
+        except Exception:
+            pass
+        return resp
+
+    async def handle_toolsets_get(request: "web.Request") -> "web.Response":
+        auth_err = check_auth(request)
+        if auth_err is not None:
+            return auth_err
+        try:
+            platform = toolsets_mod.platform_key(
+                request.query.get("platform", ""), config.default_platform
+            )
+        except ValueError as exc:
+            return web.json_response({"error": {"message": str(exc)}}, status=400)
+        snap = await asyncio.to_thread(
+            toolsets_mod.snapshot, platform, config.toolsets_locked, config.toolsets_forbidden
+        )
+        return web.json_response(snap)
+
+    async def handle_toolset_put(request: "web.Request") -> "web.Response":
+        auth_err = check_auth(request)
+        if auth_err is not None:
+            return auth_err
+        name = request.match_info["name"]
+        try:
+            platform = toolsets_mod.platform_key(
+                request.query.get("platform", ""), config.default_platform
+            )
+        except ValueError as exc:
+            return web.json_response({"error": {"message": str(exc)}}, status=400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        enabled = bool(body.get("enabled", True))
+        status, payload = await asyncio.to_thread(
+            toolsets_mod.set_enabled,
+            name,
+            enabled,
+            platform,
+            config.toolsets_locked,
+            config.toolsets_forbidden,
+        )
+        return web.json_response(payload, status=status)
+
+    app = web.Application()
+    app.router.add_get("/keryx/health", handle_health)
+    app.router.add_get("/keryx/stream", handle_stream)
+    app.router.add_get("/keryx/toolsets", handle_toolsets_get)
+    app.router.add_put("/keryx/toolsets/{name}", handle_toolset_put)
+    return app
