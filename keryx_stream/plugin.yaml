@@ -1,0 +1,9 @@
+name: keryx-stream
+version: 0.1.0
+description: "Live token streaming + toolset control for the Keryx Android client. Subscribes to the gateway stream observer hooks (on_stream_delta/segment/end) and mirrors each turn's tokens to its own SSE side-channel (GET /keryx/stream) so the app renders tokens live while chat stays on Matrix; also serves GET/PUT /keryx/toolsets. No core patches. Config: keryx_stream block in config.yaml; bearer token from KERYX_STREAM_TOKEN or API_SERVER_KEY."
+author: CocaKova
+kind: backend
+provides_hooks:
+  - on_stream_delta
+  - on_stream_segment
+  - on_stream_end

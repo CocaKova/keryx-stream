@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "keryx-stream"
+version = "0.1.0"
+description = "Live token streaming + toolset control for the Keryx Android client, as a standalone Hermes plugin (no core patches)."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "CocaKova" }]
+dependencies = ["aiohttp>=3.9"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.urls]
+Homepage = "https://github.com/CocaKova/keryx-stream"
+
+# Pip-install path: exposes register() through the Hermes plugin entry-point
+# group so `pip install keryx-stream` is discovered without a ~/.hermes/plugins
+# symlink. (The directory-install path uses keryx_stream/plugin.yaml instead.)
+[project.entry-points."hermes_agent.plugins"]
+keryx_stream = "keryx_stream:register"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.setuptools]
+packages = ["keryx_stream"]
+
+[tool.setuptools.package-data]
+keryx_stream = ["plugin.yaml"]
