@@ -13,7 +13,6 @@ this stays within the "non-secret config lives in config.yaml" rule.
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
 
 _PLATFORM_KEY_OK = re.compile(r"^[a-z0-9_]+$")
 
@@ -25,7 +24,7 @@ def platform_key(raw: str, default: str) -> str:
     return platform
 
 
-def snapshot(platform: str, locked: List[str], forbidden: List[str]) -> dict:
+def snapshot(platform: str, locked: list[str], forbidden: list[str]) -> dict:
     """Payload for ``GET /keryx/toolsets`` — same entry shape as ``/v1/toolsets``
     plus ``locked``, keyed to the requested platform's enablement."""
     from hermes_cli.config import load_config
@@ -66,9 +65,9 @@ def set_enabled(
     name: str,
     enabled: bool,
     platform: str,
-    locked: List[str],
-    forbidden: List[str],
-) -> Tuple[int, dict]:
+    locked: list[str],
+    forbidden: list[str],
+) -> tuple[int, dict]:
     """``PUT /keryx/toolsets/{name}`` — persist one toolset's enablement for a
     platform. Refuses locked/forbidden changes so the app never makes an edit a
     guard would revert behind the user's back."""
