@@ -32,7 +32,7 @@ def stub_hermes(monkeypatch):
         "platform_toolsets", {}
     ).__setitem__(plat, sorted(tools))
     config = types.ModuleType("hermes_cli.config")
-    config.load_config = lambda: {}
+    config.load_config = dict
     config.save_config = lambda cfg: None
     monkeypatch.setitem(sys.modules, "hermes_cli.tools_config", tools_config)
     monkeypatch.setitem(sys.modules, "hermes_cli.config", config)

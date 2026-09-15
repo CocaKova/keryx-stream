@@ -1,5 +1,6 @@
 """SSE server: auth, validation, and end-to-end delta delivery."""
 import asyncio
+import json
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -62,3 +63,62 @@ async def test_stream_delivers_deltas_then_closes_on_stop():
         assert "event: delta" in text
         assert '"text": "hello"' in text  # coalesced into one frame
         assert "event: stop" in text
+
+
+@pytest.mark.asyncio
+async def test_publish_requires_auth():
+    async with _client() as client:
+        resp = await client.post("/keryx/publish", json={})
+        assert resp.status == 401
+
+
+@pytest.mark.asyncio
+async def test_publish_validates_body():
+    async with _client() as client:
+        # missing chat_id
+        resp = await client.post("/keryx/publish", headers=AUTH,
+                                 json={"platform": "cli", "event": "delta", "text": "x"})
+        assert resp.status == 400
+        # non-string text
+        resp = await client.post("/keryx/publish", headers=AUTH,
+                                 json={"platform": "cli", "chat_id": "s", "event": "delta", "text": 5})
+        assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_publish_feeds_a_subscriber():
+    async with _client() as client:
+        resp = await client.get(
+            "/keryx/stream?platform=cli&chat_id=sess9", headers=AUTH
+        )
+        assert resp.status == 200
+        # A foreign process (forward mode) POSTs its hook events here:
+        resp_pub = await client.post("/keryx/publish", headers=AUTH, json={
+            "platform": "cli", "chat_id": "sess9", "event": "delta", "text": "forw",
+        })
+        assert resp_pub.status == 200
+        hub.publish_threadsafe("cli", "sess9", "stop", None)
+
+        body = await asyncio.wait_for(resp.read(), timeout=5.0)
+        text = body.decode()
+        assert "event: delta" in text and '"text": "forw"' in text
+        assert "event: stop" in text
+
+
+@pytest.mark.asyncio
+async def test_publish_tool_frame_json_reaches_subscriber():
+    async with _client() as client:
+        resp = await client.get("/keryx/stream?platform=cli&chat_id=s1", headers=AUTH)
+        assert resp.status == 200
+        await client.post("/keryx/publish", headers=AUTH, json={
+            "platform": "cli", "chat_id": "s1", "event": "tool",
+            "text": json.dumps({"phase": "start", "name": "terminal", "preview": "echo"}),
+        })
+        hub.publish_threadsafe("cli", "s1", "stop", None)
+        body = await asyncio.wait_for(resp.read(), timeout=5.0)
+        # The tool payload rides the SSE envelope as {"text": "<json>"} — the
+        # app JSON-parses text for tool events, same shape as the gateway patch.
+        data_line = next(line for line in body.decode().splitlines()
+                         if line.startswith("data:") and "phase" in line)
+        frame = json.loads(json.loads(data_line[len("data: "):])["text"])
+        assert frame == {"phase": "start", "name": "terminal", "preview": "echo"}

@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("keryx_stream.hub")
 
@@ -25,11 +24,11 @@ _QUEUE_MAX = 2048
 
 
 class _Subscription:
-    __slots__ = ("queue", "loop")
+    __slots__ = ("loop", "queue")
 
     def __init__(
         self,
-        queue: "asyncio.Queue[Tuple[str, Optional[str]]]",
+        queue: asyncio.Queue[tuple[str, str | None]],
         loop: asyncio.AbstractEventLoop,
     ):
         self.queue = queue
@@ -40,11 +39,11 @@ class KeryxStreamHub:
     """In-process pub/sub keyed by (platform, chat_id)."""
 
     def __init__(self) -> None:
-        self._subs: Dict[Tuple[str, str], List[_Subscription]] = {}
+        self._subs: dict[tuple[str, str], list[_Subscription]] = {}
         self._lock = threading.Lock()
 
     @staticmethod
-    def _key(platform: str, chat_id: str) -> Tuple[str, str]:
+    def _key(platform: str, chat_id: str) -> tuple[str, str]:
         return (str(platform).strip().lower(), str(chat_id).strip())
 
     def subscribe(self, platform: str, chat_id: str) -> _Subscription:
@@ -72,7 +71,7 @@ class KeryxStreamHub:
             return bool(self._subs.get(self._key(platform, chat_id)))
 
     def publish_threadsafe(
-        self, platform: str, chat_id: str, event: str, text: Optional[str]
+        self, platform: str, chat_id: str, event: str, text: str | None
     ) -> None:
         """Mirror one stream event to every subscriber. Never raises, never blocks."""
         key = self._key(platform, chat_id)
@@ -87,8 +86,8 @@ class KeryxStreamHub:
 
     @staticmethod
     def _offer(
-        queue: "asyncio.Queue[Tuple[str, Optional[str]]]",
-        item: Tuple[str, Optional[str]],
+        queue: asyncio.Queue[tuple[str, str | None]],
+        item: tuple[str, str | None],
     ) -> None:
         try:
             queue.put_nowait(item)
@@ -97,9 +96,9 @@ class KeryxStreamHub:
 
 
 def drain_coalesced(
-    queue: "asyncio.Queue[Tuple[str, Optional[str]]]",
-    first: Tuple[str, Optional[str]],
-) -> Tuple[List[Tuple[str, Optional[str]]], bool]:
+    queue: asyncio.Queue[tuple[str, str | None]],
+    first: tuple[str, str | None],
+) -> tuple[list[tuple[str, str | None]], bool]:
     """Merge a burst of queued token deltas into as few frames as possible.
 
     Takes the item already pulled from ``queue`` (``first``) plus everything
@@ -112,16 +111,16 @@ def drain_coalesced(
     through in order. Byte-exact — concatenation is associative — so the client's
     accumulated stream still matches the final committed message.
     """
-    pending: List[Tuple[str, Optional[str]]] = [first]
+    pending: list[tuple[str, str | None]] = [first]
     while True:
         try:
             pending.append(queue.get_nowait())
         except asyncio.QueueEmpty:
             break
 
-    frames: List[Tuple[str, Optional[str]]] = []
-    buf: List[str] = []
-    buf_event: Optional[str] = None
+    frames: list[tuple[str, str | None]] = []
+    buf: list[str] = []
+    buf_event: str | None = None
     stop = False
 
     def _flush() -> None:
