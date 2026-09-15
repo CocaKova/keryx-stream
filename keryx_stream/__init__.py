@@ -135,10 +135,18 @@ def _make_hook_callbacks(config: PluginConfig, publish: Callable[..., None]):
         if key and text and not already_streamed:
             publish(key[0], key[1], "interim", text)
 
-    def on_end(*, session_id=None, surface=None, final_text=None, **_):
+    def on_end(*, session_id=None, surface=None, final_text="", finished=True, error=None, **_):
+        """`on_stream_end` fires per API call, not per turn: a tool iteration ends
+        with ``final_text=""``, only the last one carries the answer (or an
+        ``error``). So: empty text + no error → ``segment`` (tool boundary,
+        channel stays open); real text or an error → ``stop`` (turn over)."""
         key = _key_of(surface, session_id)
-        if key:
+        if not key:
+            return
+        if error or (isinstance(final_text, str) and final_text.strip()):
             publish(key[0], key[1], "stop", final_text if isinstance(final_text, str) else None)
+        else:
+            publish(key[0], key[1], "segment", None)
 
     def _tool_frame(*, phase: str, tool_name: str | None = None, status: str | None = None,
                     duration_ms: int = 0, args: Any = None, result: Any = None,

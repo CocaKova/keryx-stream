@@ -13,7 +13,7 @@ def test_stream_callbacks_publish_expected_events(monkeypatch):
     cbs["on_stream_delta"](session_id="s1", surface="cli", delta="hi")
     cbs["on_stream_delta"](session_id="s1", surface="cli", delta="hm", kind="reasoning")
     cbs["on_interim_message"](session_id="s1", surface="cli", text="part done", already_streamed=False)
-    cbs["on_stream_end"](session_id="s1", surface="cli", final_text="done")
+    cbs["on_stream_end"](session_id="s1", surface="cli", final_text="done", finished=True)
 
     assert published == [
         ("cli", "s1", "start", None),
@@ -22,6 +22,42 @@ def test_stream_callbacks_publish_expected_events(monkeypatch):
         ("cli", "s1", "interim", "part done"),
         ("cli", "s1", "stop", "done"),
     ]
+
+
+def test_tool_iteration_end_is_segment_final_answer_is_stop(monkeypatch):
+    """on_stream_end fires per API call: the tool iteration ends with final_text=''
+    (segment, channel stays open); the last iteration carries the answer (stop)."""
+    published = []
+    cbs = _make_hook_callbacks(PluginConfig(default_platform="cli"), lambda *a: published.append(a))
+
+    cbs["on_stream_start"](session_id="s1", surface="cli")
+    cbs["on_stream_end"](session_id="s1", surface="cli", final_text="", finished=True)  # tool iter
+    cbs["pre_tool_call"](session_id="s1", surface="cli", tool_name="terminal", args={"command": "echo"})
+    cbs["post_tool_call"](session_id="s1", surface="cli", tool_name="terminal",
+                          result="out", status="ok", duration_ms=10)
+    cbs["on_stream_start"](session_id="s1", surface="cli")
+    cbs["on_stream_delta"](session_id="s1", surface="cli", delta="answer")
+    cbs["on_stream_end"](session_id="s1", surface="cli", final_text="answer", finished=True)
+
+    assert published == [
+        ("cli", "s1", "start", None),
+        ("cli", "s1", "segment", None),
+        ("cli", "s1", "tool", json.dumps({"phase": "start", "name": "terminal",
+                                          "preview": str({"command": "echo"})})),
+        ("cli", "s1", "tool", json.dumps({"phase": "end", "name": "terminal", "ok": True,
+                                          "ms": 10, "result": "out", "result_len": 3})),
+        ("cli", "s1", "start", None),
+        ("cli", "s1", "delta", "answer"),
+        ("cli", "s1", "stop", "answer"),
+    ]
+
+
+def test_error_end_is_stop_even_with_empty_text(monkeypatch):
+    published = []
+    cbs = _make_hook_callbacks(PluginConfig(default_platform="cli"), lambda *a: published.append(a))
+    cbs["on_stream_end"](session_id="s1", surface="cli", final_text="",
+                         finished=False, error="HTTP 500")
+    assert published == [("cli", "s1", "stop", "")]
 
 
 def test_tool_callbacks_publish_tool_frames(monkeypatch):
@@ -61,8 +97,8 @@ def test_delta_callback_ignores_empty_or_missing(monkeypatch):
     cbs = _make_hook_callbacks(PluginConfig(), lambda *a: published.append(a))
     cbs["on_stream_delta"](session_id="s1", delta="")     # empty delta
     cbs["on_stream_delta"](delta="hi")                    # no session id
-    cbs["on_stream_end"](session_id="s1", final_text=None)  # surface falls back to default
-    assert published == [(PluginConfig().default_platform, "s1", "stop", None)]
+    cbs["on_stream_end"](session_id="s1", final_text="done")  # surface falls back to default
+    assert published == [(PluginConfig().default_platform, "s1", "stop", "done")]
 
 
 def test_surface_falls_back_to_config_default_when_absent(monkeypatch):
