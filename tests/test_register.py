@@ -1,4 +1,6 @@
 """register(ctx) wiring, config loading, and hook → publish mirroring."""
+import json
+
 import keryx_stream
 from keryx_stream import PluginConfig, _make_hook_callbacks, load_config, register
 
@@ -34,12 +36,13 @@ def test_tool_callbacks_publish_tool_frames(monkeypatch):
     assert len(published) == 2
     platform, chat_id, event, frame = published[0]
     assert (platform, chat_id, event) == ("cli", "s1", "tool")
-    assert frame == {"phase": "start", "name": "terminal",
-                     "preview": str({"command": "echo probe-ok"})}
+    # Tool frames ride the wire as a JSON string (same shape as the gateway patch).
+    assert json.loads(frame) == {"phase": "start", "name": "terminal",
+                                 "preview": str({"command": "echo probe-ok"})}
     platform, chat_id, event, frame = published[1]
     assert (platform, chat_id, event) == ("cli", "s1", "tool")
-    assert frame == {"phase": "end", "name": "terminal", "ok": True, "ms": 63,
-                     "result": '{"output": "probe-ok"}', "result_len": 22}
+    assert json.loads(frame) == {"phase": "end", "name": "terminal", "ok": True, "ms": 63,
+                                 "result": '{"output": "probe-ok"}', "result_len": 22}
 
 
 def test_post_tool_error_carries_error_and_ok_false(monkeypatch):
@@ -48,7 +51,7 @@ def test_post_tool_error_carries_error_and_ok_false(monkeypatch):
     cbs["post_tool_call"](session_id="s1", surface="cli", tool_name="terminal",
                           result="boom", status="error", duration_ms=5,
                           error_message="exit code 1")
-    _, _, _, frame = published[0]
+    frame = json.loads(published[0][3])
     assert frame["ok"] is False
     assert frame["error"] == "exit code 1"
 
@@ -81,7 +84,7 @@ def test_tool_result_is_clipped_middle(monkeypatch):
     cbs = _make_hook_callbacks(PluginConfig(), lambda *a: published.append(a))
     big = "x" * 5000
     cbs["post_tool_call"](session_id="s1", tool_name="web_extract", result=big, status="ok")
-    _, _, _, frame = published[0]
+    frame = json.loads(published[0][3])
     assert len(frame["result"]) < 3000
     assert frame["result_len"] == 5000
     assert "truncated" in frame["result"]
