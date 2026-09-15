@@ -29,6 +29,7 @@ the same ``hermes_cli`` helpers core uses. Install into ``~/.hermes/plugins/``
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -159,15 +160,16 @@ def _make_hook_callbacks(config: PluginConfig, publish: Callable[..., None]):
     def on_pre_tool(*, session_id=None, surface=None, tool_name=None, args=None, **_):
         key = _key_of(surface, session_id)
         if key:
-            publish(key[0], key[1], "tool", _tool_frame(phase="start", tool_name=tool_name, args=args))
+            publish(key[0], key[1], "tool",
+                    json.dumps(_tool_frame(phase="start", tool_name=tool_name, args=args)))
 
     def on_post_tool(*, session_id=None, surface=None, tool_name=None, result=None,
                      status=None, duration_ms=0, error_message=None, **_):
         key = _key_of(surface, session_id)
         if key:
-            publish(key[0], key[1], "tool", _tool_frame(
+            publish(key[0], key[1], "tool", json.dumps(_tool_frame(
                 phase="end", tool_name=tool_name, result=result, status=status,
-                duration_ms=duration_ms, error_message=error_message))
+                duration_ms=duration_ms, error_message=error_message)))
 
     return {
         "on_stream_start": on_start,
