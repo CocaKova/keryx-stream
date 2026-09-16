@@ -6,6 +6,9 @@ is fully decoupled. Routes:
 
   GET  /keryx/stream?platform=<p>&chat_id=<id>  — transient SSE of one turn's
        token deltas (event: delta / segment / reasoning / stop / ping).
+  POST /keryx/publish                           — bearer-authed ingest for
+       non-hub processes (forward mode): same frames the hooks emit, published
+       into this process's hub.
   GET  /keryx/toolsets?platform=<p>             — toolset view for the platform.
   PUT  /keryx/toolsets/{name}                   — toggle one toolset.
   GET  /keryx/health                            — liveness.
@@ -18,10 +21,9 @@ import asyncio
 import hmac
 import json
 import logging
-from typing import Optional
 
-from .hub import drain_coalesced, hub
 from . import toolsets as toolsets_mod
+from .hub import drain_coalesced, hub
 
 logger = logging.getLogger("keryx_stream.server")
 
@@ -32,11 +34,11 @@ def _unauthorized(web):
     )
 
 
-def build_app(config) -> "object":
+def build_app(config) -> object:
     """Build the aiohttp Application for the given PluginConfig."""
     from aiohttp import web
 
-    def check_auth(request: "web.Request") -> Optional["web.Response"]:
+    def check_auth(request: web.Request) -> web.Response | None:
         if not config.token:
             # No token configured → refuse everything rather than serve open.
             return _unauthorized(web)
@@ -51,7 +53,7 @@ def build_app(config) -> "object":
     async def handle_health(request):
         return web.json_response({"ok": True, "plugin": "keryx-stream"})
 
-    async def handle_stream(request: "web.Request") -> "web.StreamResponse":
+    async def handle_stream(request: web.Request) -> web.StreamResponse:
         auth_err = check_auth(request)
         if auth_err is not None:
             return auth_err
@@ -84,7 +86,7 @@ def build_app(config) -> "object":
                 for event, text in frames:
                     payload = json.dumps({"text": text} if text is not None else {})
                     await resp.write(
-                        f"event: {event}\ndata: {payload}\n\n".encode("utf-8")
+                        f"event: {event}\ndata: {payload}\n\n".encode()
                     )
                 if stop:
                     break  # transient channel: one turn per subscription
@@ -98,7 +100,7 @@ def build_app(config) -> "object":
             pass
         return resp
 
-    async def handle_toolsets_get(request: "web.Request") -> "web.Response":
+    async def handle_toolsets_get(request: web.Request) -> web.Response:
         auth_err = check_auth(request)
         if auth_err is not None:
             return auth_err
@@ -113,7 +115,7 @@ def build_app(config) -> "object":
         )
         return web.json_response(snap)
 
-    async def handle_toolset_put(request: "web.Request") -> "web.Response":
+    async def handle_toolset_put(request: web.Request) -> web.Response:
         auth_err = check_auth(request)
         if auth_err is not None:
             return auth_err
@@ -139,9 +141,35 @@ def build_app(config) -> "object":
         )
         return web.json_response(payload, status=status)
 
+    async def handle_publish(request: web.Request) -> web.Response:
+        auth_err = check_auth(request)
+        if auth_err is not None:
+            return auth_err
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"error": {"message": "JSON body required"}}, status=400
+            )
+        platform = str(body.get("platform", "")).strip().lower()
+        chat_id = str(body.get("chat_id", "")).strip()
+        event = str(body.get("event", "")).strip()
+        if not platform or not chat_id or not event:
+            return web.json_response(
+                {"error": {"message": "platform, chat_id and event are required"}}, status=400
+            )
+        text = body.get("text")
+        if text is not None and not isinstance(text, str):
+            return web.json_response(
+                {"error": {"message": "text must be a string or null"}}, status=400
+            )
+        hub.publish_threadsafe(platform, chat_id, event, text)
+        return web.json_response({"ok": True})
+
     app = web.Application()
     app.router.add_get("/keryx/health", handle_health)
     app.router.add_get("/keryx/stream", handle_stream)
+    app.router.add_post("/keryx/publish", handle_publish)
     app.router.add_get("/keryx/toolsets", handle_toolsets_get)
     app.router.add_put("/keryx/toolsets/{name}", handle_toolset_put)
     return app

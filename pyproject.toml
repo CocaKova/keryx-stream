@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "keryx-stream"
-version = "0.1.0"
-description = "Live token streaming + toolset control for the Keryx Android client, as a standalone Hermes plugin (no core patches)."
+version = "0.2.0"
+description = "Live token streaming + tool mirroring for the Keryx Android client, as a standalone Hermes plugin (no core patches)."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "CocaKova" }]
