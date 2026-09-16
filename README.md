@@ -6,10 +6,13 @@ using only the public plugin surface, with **no patches to the hermes-agent
 core tree**.
 
 Keryx chats over Matrix (multi-device sync, history, push). Matrix delivers a
-message per turn, not a token stream, so this plugin subscribes to the gateway's
-generic streaming observer hooks and mirrors each turn's tokens to its own
-Server-Sent-Events side-channel that the app renders live, then lets Matrix sync
-the single final message.
+message per turn, not a token stream, so this plugin subscribes to Hermes'
+shipped streaming and tool observer hooks (`on_stream_start` /
+`on_stream_delta` / `on_stream_end` / `on_interim_message` plus
+`pre_tool_call` / `post_tool_call` — every one carries the `session_id`) and
+mirrors each turn's tokens and tool activity to its own Server-Sent-Events
+side-channel that the app renders live, then lets Matrix sync the single final
+message.
 
 ## What it exposes
 
@@ -18,18 +21,48 @@ gateway's api_server:
 
 | route | purpose |
 |-------|---------|
-| `GET /keryx/stream?platform=<p>&chat_id=<id>` | transient SSE of one turn — `event: delta` / `segment` / `reasoning` / `stop` / `ping` |
+| `GET /keryx/stream?platform=<p>&chat_id=<id>` | transient SSE of one turn — `event: start` / `delta` / `reasoning` / `interim` / `tool` / `stop` / `ping` |
+| `POST /keryx/publish` | ingest for non-hub processes (see "Foreign sessions: forward mode") |
 | `GET /keryx/toolsets?platform=<p>` | toolset view for the platform the turn runs on |
 | `PUT /keryx/toolsets/{name}` | enable/disable a toolset (`{"enabled": true}`) |
 | `GET /keryx/health` | liveness |
 
 ## Requirements
 
-A hermes-agent that provides the streaming observer hooks
-(`on_stream_delta` / `on_stream_segment` / `on_stream_end`) —
-[NousResearch/hermes-agent#65077](https://github.com/NousResearch/hermes-agent/pull/65077).
-Without them the plugin loads and serves toolsets, but live streaming stays
-inactive (it logs a one-line notice).
+A hermes-agent with the shipped stream observer hooks
+(`on_stream_start` / `on_stream_delta` / `on_stream_end` /
+`on_interim_message`; landed upstream in #84924). Without them the plugin
+loads and serves toolsets, but live streaming stays inactive (it logs a
+one-line notice). Tool mirroring additionally uses the shipped
+`pre_tool_call` / `post_tool_call` hooks.
+
+## Foreign sessions: forward mode
+
+Turns driven from OUTSIDE the gateway process — a `hermes chat` one-shot, a
+cron run, any CLI process — fire the same hooks in their own process, where no
+subscriber is attached. The plugin handles this with two run modes, picked
+automatically at startup:
+
+- **Hub mode** — this process binds the SSE port (the gateway, normally) and
+  serves subscribers.
+- **Forward mode** — the port is already bound by another keryx-stream
+  instance, so hook events are POSTed to that instance's `/keryx/publish`
+  route. A CLI session's deltas and tool events then appear on the hub
+  owner's side-channel exactly like a gateway turn's, keyed by session id:
+  subscribe with `GET /keryx/stream?platform=cli&chat_id=<session_id>`.
+
+Forward mode is automatic — no flag. To point a forwarder at a specific hub
+owner (e.g. a remote gateway), set `forward_url` in the plugin's config.yaml
+block:
+
+```yaml
+keryx_stream:
+  forward_url: "http://gateway-host:8646/keryx/publish"
+```
+
+The bearer token is shared between modes: `KERYX_STREAM_TOKEN` (or
+`API_SERVER_KEY`) authenticates both the subscriber's `GET /keryx/stream` and
+the forwarder's `POST /keryx/publish`.
 
 ## Install
 

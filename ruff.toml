@@ -1,0 +1,14 @@
+# Ruff baseline for keryx-stream: keep the ruleset explicit and the noise low.
+# S110/BLE001: best-effort publish/mirror paths swallow by design (never raise
+# into the agent's stream or tool path); that is the documented contract.
+[lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "S110",   # try/except-pass on best-effort publish paths
+    "BLE001", # blind except on best-effort publish paths
+    "E501",   # pre-existing repo style; formatter is not enforced here
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["RUF059"]
+
