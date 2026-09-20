@@ -10,3 +10,4 @@ provides_hooks:
   - on_interim_message
   - pre_tool_call
   - post_tool_call
+  - pre_gateway_dispatch

@@ -168,7 +168,7 @@ def test_register_wires_all_hooks_and_starts_server(monkeypatch):
     register(FakeCtx())
     assert sorted(registered) == [
         "on_interim_message", "on_stream_delta", "on_stream_end", "on_stream_start",
-        "post_tool_call", "pre_tool_call",
+        "post_tool_call", "pre_gateway_dispatch", "pre_tool_call",
     ]
 
 
@@ -194,7 +194,7 @@ def test_register_forwards_when_port_taken(monkeypatch):
             registered.append(name)
 
     register(FakeCtx())
-    assert len(registered) == 6
+    assert len(registered) == 7
     assert created and created[0][0].endswith("/keryx/publish")
 
 
@@ -209,3 +209,54 @@ def test_register_noop_when_disabled(monkeypatch):
 
     register(FakeCtx())
     assert called == []
+
+
+class _Origin:
+    def __init__(self, platform, chat_id):
+        self.platform, self.chat_id = platform, chat_id
+
+
+class _Entry:
+    def __init__(self, origin):
+        self.origin = origin
+
+
+class _Store:
+    def __init__(self, table):
+        self.table, self.lookups = table, 0
+
+    def lookup_by_session_id(self, session_id):
+        self.lookups += 1
+        return self.table.get(session_id)
+
+
+def test_gateway_turn_also_publishes_under_its_chat_key():
+    """The app on a chat transport subscribes by room id — it never learns the
+    session id — so a gateway turn must reach that key too."""
+    published = []
+    cbs = _make_hook_callbacks(PluginConfig(default_platform="matrix"), lambda *a: published.append(a))
+    store = _Store({"s1": _Entry(_Origin("matrix", "!room:hs"))})
+    assert cbs["pre_gateway_dispatch"](event=object(), gateway=None, session_store=store) is None
+
+    cbs["on_stream_start"](session_id="s1", surface="matrix")
+    cbs["on_stream_delta"](session_id="s1", surface="matrix", delta="a")
+    cbs["on_stream_delta"](session_id="s1", surface="matrix", delta="b")
+    cbs["on_stream_end"](session_id="s1", surface="matrix", final_text="ab")
+
+    assert [p for p in published if p[1] == "!room:hs"] == [
+        ("matrix", "!room:hs", "start", None),
+        ("matrix", "!room:hs", "delta", "a"),
+        ("matrix", "!room:hs", "delta", "b"),
+        ("matrix", "!room:hs", "stop", "ab"),
+    ]
+    assert ("matrix", "s1", "delta", "a") in published  # session key still served
+    assert store.lookups == 1  # never on the token path
+
+
+def test_no_store_or_unknown_session_publishes_session_key_only():
+    published = []
+    cbs = _make_hook_callbacks(PluginConfig(default_platform="cli"), lambda *a: published.append(a))
+    cbs["on_stream_start"](session_id="s9", surface="cli")
+    cbs["pre_gateway_dispatch"](session_store=_Store({}))
+    cbs["on_stream_delta"](session_id="s9", surface="cli", delta="x")
+    assert published == [("cli", "s9", "start", None), ("cli", "s9", "delta", "x")]
