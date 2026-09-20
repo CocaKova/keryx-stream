@@ -48,6 +48,7 @@ logger = logging.getLogger("keryx_stream")
 _TOOL_PREVIEW_MAX = 240
 _TOOL_RESULT_MAX = 2400
 _TOOL_RESULT_TAIL = 800
+_SURFACE_CACHE_MAX = 512
 
 
 @dataclass
@@ -122,6 +123,7 @@ def _make_hook_callbacks(config: PluginConfig, publish: Callable[..., None],
     """Return the shipped-hook callbacks bound to this config and a publish
     function (hub or forwarder). Exposed for tests."""
     routes = routes or SessionRoutes()
+    surfaces: dict[str, str] = {}  # session_id -> surface, learned from the stream hooks
 
     def fan_out(platform: str, sid: str, event: str, text):
         """Publish under the session key AND the chat key the session routes
@@ -148,7 +150,16 @@ def _make_hook_callbacks(config: PluginConfig, publish: Callable[..., None],
         sid = str(session_id or "").strip()
         if not sid:
             return None
-        platform = str(surface or config.default_platform).strip().lower() or config.default_platform
+        platform = str(surface or "").strip().lower()
+        if platform:
+            surfaces[sid] = platform
+            while len(surfaces) > _SURFACE_CACHE_MAX:
+                surfaces.pop(next(iter(surfaces)))
+        else:
+            # The tool hooks carry no surface — reuse the one this session's
+            # stream hooks announced, so tool frames land on the same key as
+            # the tokens instead of the default platform's.
+            platform = surfaces.get(sid) or config.default_platform
         return platform, sid
 
     def on_start(*, session_id=None, surface=None, **_):
