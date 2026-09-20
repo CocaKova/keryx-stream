@@ -1,5 +1,5 @@
 name: keryx-stream
-version: 0.2.0
+version: 0.3.0
 description: "Live token streaming + tool mirroring for the Keryx Android client. Subscribes to the shipped observer hooks (on_stream_start/delta/end, on_interim_message, pre/post_tool_call — all carry session_id) and mirrors each turn's tokens and tool activity to its own SSE side-channel (GET /keryx/stream) so the app renders turns live while chat stays on Matrix; non-gateway processes (hermes chat one-shots) auto-forward their hook events to the hub owner via POST /keryx/publish. Also serves GET/PUT /keryx/toolsets. No core patches. Config: keryx_stream block in config.yaml; bearer token from KERYX_STREAM_TOKEN or API_SERVER_KEY."
 author: CocaKova
 kind: backend

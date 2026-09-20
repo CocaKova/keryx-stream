@@ -58,6 +58,8 @@ class PluginConfig:
     default_platform: str = "matrix"
     token: str = ""  # secret — from env, never config.yaml
     forward_url: str = ""  # hub owner's publish endpoint; derived from port when empty
+    panels: bool = True  # serve the app's /keryx/* panel routes (panels.py)
+    upstream_url: str = "http://127.0.0.1:8642"  # native API server to relay to; "" = off
     toolsets_locked: list[str] = field(default_factory=list)
     toolsets_forbidden: list[str] = field(default_factory=list)
 
@@ -84,9 +86,22 @@ def load_config() -> PluginConfig:
         default_platform=str(cfg.get("default_platform", "matrix")).strip().lower(),
         token=token,
         forward_url=str(cfg.get("forward_url", "")).strip(),
+        panels=bool(cfg.get("panels", True)),
+        upstream_url=_upstream_url(cfg),
         toolsets_locked=list(toolsets.get("locked", []) or []),
         toolsets_forbidden=list(toolsets.get("forbidden", []) or []),
     )
+
+
+def _upstream_url(cfg: dict) -> str:
+    """The native API server the plugin's port fronts. Explicit config wins
+    (``""`` or ``false`` turns the relay off); otherwise follow the port the
+    API server itself is told to use."""
+    if "upstream_url" in cfg:
+        raw = cfg.get("upstream_url")
+        return "" if raw in (None, False) else str(raw).strip()
+    port = os.environ.get("API_SERVER_PORT", "").strip() or "8642"
+    return f"http://127.0.0.1:{port}"
 
 
 def _clip(value, limit: int) -> str:

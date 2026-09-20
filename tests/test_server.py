@@ -122,3 +122,29 @@ async def test_publish_tool_frame_json_reaches_subscriber():
                          if line.startswith("data:") and "phase" in line)
         frame = json.loads(json.loads(data_line[len("data: "):])["text"])
         assert frame == {"phase": "start", "name": "terminal", "preview": "echo"}
+
+
+@pytest.mark.asyncio
+async def test_requests_run_inside_the_profile_secret_scope(monkeypatch):
+    """A multiplexed gateway refuses credential reads outside a profile scope;
+    the toolsets probe does such reads, so every request must enter one."""
+    import sys
+    import types
+
+    events = []
+    fake = types.ModuleType("agent.secret_scope")
+    fake.is_multiplex_active = lambda: True
+    fake.build_profile_secret_scope = lambda home: {"K": "v"}
+    fake.set_secret_scope = lambda secrets: events.append(("set", dict(secrets))) or "tok"
+    fake.reset_secret_scope = lambda token: events.append(("reset", token))
+    agent_pkg = types.ModuleType("agent")
+    agent_pkg.secret_scope = fake
+    constants = types.ModuleType("hermes_constants")
+    constants.get_hermes_home = lambda: "/h"
+    monkeypatch.setitem(sys.modules, "agent", agent_pkg)
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", fake)
+    monkeypatch.setitem(sys.modules, "hermes_constants", constants)
+
+    async with _client() as client:
+        assert (await client.get("/keryx/health")).status == 200
+    assert events == [("set", {"K": "v"}), ("reset", "tok")]
