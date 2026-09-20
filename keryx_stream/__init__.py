@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .hub import hub
+from .routing import SessionRoutes
 
 logger = logging.getLogger("keryx_stream")
 
@@ -101,9 +102,26 @@ def _clip_middle(value, limit: int = _TOOL_RESULT_MAX, tail: int = _TOOL_RESULT_
     return text[:head] + "\n…[truncated]…\n" + text[-tail:]
 
 
-def _make_hook_callbacks(config: PluginConfig, publish: Callable[..., None]):
+def _make_hook_callbacks(config: PluginConfig, publish: Callable[..., None],
+                         routes: SessionRoutes | None = None):
     """Return the shipped-hook callbacks bound to this config and a publish
     function (hub or forwarder). Exposed for tests."""
+    routes = routes or SessionRoutes()
+
+    def fan_out(platform: str, sid: str, event: str, text):
+        """Publish under the session key AND the chat key the session routes
+        to (see routing.py) — a chat-transport client only knows the latter."""
+        publish(platform, sid, event, text)
+        # Resolve on the per-API-call events; tokens ride the cached key.
+        chat = routes.chat_key(sid) if event in ("delta", "reasoning") else routes.resolve(sid)
+        if chat and chat != (platform, sid):
+            publish(chat[0], chat[1], event, text)
+
+    def on_dispatch(*, session_store=None, gateway=None, **_):
+        """Observer only — borrows the gateway's session store, never touches
+        the event (returning None lets dispatch proceed untouched)."""
+        routes.bind(session_store or getattr(gateway, "session_store", None))
+        return None
 
     def _key_of(surface: str | None, session_id: str | None):
         """(platform, chat_id) for a hook payload, or None when unusable.
@@ -121,19 +139,19 @@ def _make_hook_callbacks(config: PluginConfig, publish: Callable[..., None]):
     def on_start(*, session_id=None, surface=None, **_):
         key = _key_of(surface, session_id)
         if key:
-            publish(*key, "start", None)
+            fan_out(*key, "start", None)
 
     def on_delta(*, session_id=None, surface=None, delta="", kind="text", **_):
         key = _key_of(surface, session_id)
         if key and delta:
             event = "reasoning" if kind == "reasoning" else "delta"
-            publish(key[0], key[1], event, delta)
+            fan_out(key[0], key[1], event, delta)
 
     def on_interim(*, session_id=None, surface=None, text="", already_streamed=False, **_):
         # Text the subscriber already saw as deltas would duplicate on the wire.
         key = _key_of(surface, session_id)
         if key and text and not already_streamed:
-            publish(key[0], key[1], "interim", text)
+            fan_out(key[0], key[1], "interim", text)
 
     def on_end(*, session_id=None, surface=None, final_text="", finished=True, error=None, **_):
         """`on_stream_end` fires per API call, not per turn: a tool iteration ends
@@ -144,9 +162,9 @@ def _make_hook_callbacks(config: PluginConfig, publish: Callable[..., None]):
         if not key:
             return
         if error or (isinstance(final_text, str) and final_text.strip()):
-            publish(key[0], key[1], "stop", final_text if isinstance(final_text, str) else None)
+            fan_out(key[0], key[1], "stop", final_text if isinstance(final_text, str) else None)
         else:
-            publish(key[0], key[1], "segment", None)
+            fan_out(key[0], key[1], "segment", None)
 
     def _tool_frame(*, phase: str, tool_name: str | None = None, status: str | None = None,
                     duration_ms: int = 0, args: Any = None, result: Any = None,
@@ -168,14 +186,14 @@ def _make_hook_callbacks(config: PluginConfig, publish: Callable[..., None]):
     def on_pre_tool(*, session_id=None, surface=None, tool_name=None, args=None, **_):
         key = _key_of(surface, session_id)
         if key:
-            publish(key[0], key[1], "tool",
+            fan_out(key[0], key[1], "tool",
                     json.dumps(_tool_frame(phase="start", tool_name=tool_name, args=args)))
 
     def on_post_tool(*, session_id=None, surface=None, tool_name=None, result=None,
                      status=None, duration_ms=0, error_message=None, **_):
         key = _key_of(surface, session_id)
         if key:
-            publish(key[0], key[1], "tool", json.dumps(_tool_frame(
+            fan_out(key[0], key[1], "tool", json.dumps(_tool_frame(
                 phase="end", tool_name=tool_name, result=result, status=status,
                 duration_ms=duration_ms, error_message=error_message)))
 
@@ -186,6 +204,7 @@ def _make_hook_callbacks(config: PluginConfig, publish: Callable[..., None]):
         "on_stream_end": on_end,
         "pre_tool_call": on_pre_tool,
         "post_tool_call": on_post_tool,
+        "pre_gateway_dispatch": on_dispatch,
     }
 
 
