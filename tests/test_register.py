@@ -260,3 +260,19 @@ def test_no_store_or_unknown_session_publishes_session_key_only():
     cbs["pre_gateway_dispatch"](session_store=_Store({}))
     cbs["on_stream_delta"](session_id="s9", surface="cli", delta="x")
     assert published == [("cli", "s9", "start", None), ("cli", "s9", "delta", "x")]
+
+
+def test_tool_frames_follow_the_sessions_surface():
+    """The tool hooks carry session_id but no surface. Frames must land on the
+    key the session's tokens use, not on the default platform's."""
+    published = []
+    cbs = _make_hook_callbacks(PluginConfig(default_platform="matrix"), lambda *a: published.append(a))
+    cbs["on_stream_start"](session_id="s1", surface="cli")
+    cbs["pre_tool_call"](session_id="s1", tool_name="terminal", args={"command": "echo"})
+    cbs["post_tool_call"](session_id="s1", tool_name="terminal", result="out", duration_ms=1)
+    assert [(p, sid, ev) for p, sid, ev, _ in published] == [
+        ("cli", "s1", "start"), ("cli", "s1", "tool"), ("cli", "s1", "tool"),
+    ]
+    # a session never seen streaming still falls back to the default platform
+    cbs["pre_tool_call"](session_id="s2", tool_name="terminal", args={})
+    assert published[-1][:2] == ("matrix", "s2")
