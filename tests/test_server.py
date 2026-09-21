@@ -148,3 +148,20 @@ async def test_requests_run_inside_the_profile_secret_scope(monkeypatch):
     async with _client() as client:
         assert (await client.get("/keryx/health")).status == 200
     assert events == [("set", {"K": "v"}), ("reset", "tok")]
+
+
+@pytest.mark.asyncio
+async def test_stream_survives_panels_that_cannot_load(monkeypatch):
+    """The panels import Hermes internals. If a Hermes release breaks them the
+    side-channel must still come up, and health must stop advertising them."""
+    import keryx_stream.panels as panels
+
+    def boom(router, check_auth):
+        raise ImportError("hermes moved something")
+
+    monkeypatch.setattr(panels, "register_panel_routes", boom)
+    app = build_app(PluginConfig(token="t", panels=True, upstream_url=""))
+    async with TestClient(TestServer(app)) as client:
+        body = await (await client.get("/keryx/health")).json()
+        assert "stream" in body["features"] and "kanban" not in body["features"]
+        assert (await client.get("/keryx/stream", headers=AUTH)).status == 400  # route alive

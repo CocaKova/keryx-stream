@@ -35,6 +35,10 @@ from .version import FEATURES, __version__
 logger = logging.getLogger("keryx_stream.server")
 
 
+# Served by this module itself; everything else in FEATURES comes from panels.py.
+_CORE_FEATURES = {"stream", "stream.chat_key", "publish", "toolsets"}
+
+
 def _unauthorized(web):
     return web.json_response(
         {"error": {"message": "Invalid or missing bearer token"}}, status=401
@@ -58,7 +62,8 @@ def build_app(config) -> object:
         return None
 
     async def handle_health(request):
-        features = list(FEATURES) + (["proxy"] if config.upstream_url else [])
+        features = [f for f in FEATURES if f in _CORE_FEATURES or request.app.get("keryx_panels")]
+        features += ["proxy"] if config.upstream_url else []
         return web.json_response({
             "ok": True, "plugin": "keryx-stream", "version": __version__, "features": features,
         })
@@ -183,8 +188,15 @@ def build_app(config) -> object:
     app.router.add_get("/keryx/toolsets", handle_toolsets_get)
     app.router.add_put("/keryx/toolsets/{name}", handle_toolset_put)
     if config.panels:
-        from .panels import register_panel_routes
-        register_panel_routes(app.router, check_auth)
+        # The panels lean on Hermes internals; the stream must not go down with
+        # them if a Hermes release moves something they import.
+        try:
+            from .panels import register_panel_routes
+            register_panel_routes(app.router, check_auth)
+            app["keryx_panels"] = True
+        except Exception:
+            logger.warning("keryx-stream: panel routes unavailable on this Hermes — "
+                           "streaming and toolsets still served", exc_info=True)
     if config.upstream_url:
         from .proxy import make_proxy_handler
         relay, cleanup = make_proxy_handler(config.upstream_url, check_auth)
