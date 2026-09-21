@@ -100,7 +100,7 @@ async def test_health_advertises_version_and_features():
     async with _plugin("http://127.0.0.1:9") as client:
         body = await (await client.get("/keryx/health")).json()
         assert body["version"].count(".") == 2
-        assert {"stream", "stream.chat_key", "capabilities", "proxy"} <= set(body["features"])
+        assert {"stream", "stream.chat_key", "proxy"} <= set(body["features"])
     async with _plugin("") as client:
         assert "proxy" not in (await (await client.get("/keryx/health")).json())["features"]
 

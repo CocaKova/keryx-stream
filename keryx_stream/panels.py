@@ -3147,4 +3147,9 @@ def register_panel_routes(router: Any, check_auth) -> None:
     router.add_post("/keryx/update/check", _make_json_handler(check_auth, _update_check_post))
     router.add_post("/keryx/update/probe", _make_json_handler(check_auth, _update_probe_post))
     router.add_post("/keryx/update", _make_json_handler(check_auth, _update_post))
-    _shipyard_routes(router, check_auth)
+    try:
+        _shipyard_routes(router, check_auth)
+    except ImportError:
+        # hermes_cli.web_git is newer than the rest of what the panels need —
+        # an older Hermes loses Shipyard, not every panel.
+        logger.warning("keryx-stream: this Hermes has no hermes_cli.web_git — Shipyard routes are off")
