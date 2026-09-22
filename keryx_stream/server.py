@@ -11,9 +11,14 @@ is fully decoupled. Routes:
        into this process's hub.
   GET  /keryx/toolsets?platform=<p>             — toolset view for the platform.
   PUT  /keryx/toolsets/{name}                   — toggle one toolset.
-  GET  /keryx/health                            — liveness.
+  GET  /keryx/health                            — liveness + version + the
+       feature list, so the app can tell a missing panel from an old plugin.
+  /keryx/*                                      — the app's panel routes
+       (panels.py): reasoning dial, config, brains, kanban, skills, pets …
+  anything else                                 — relayed to the native API
+       server (proxy.py), so the app needs one URL, not two.
 
-All routes except health require ``Authorization: Bearer <token>``.
+All routes except the health probes require ``Authorization: Bearer <token>``.
 """
 from __future__ import annotations
 
@@ -24,8 +29,14 @@ import logging
 
 from . import toolsets as toolsets_mod
 from .hub import drain_coalesced, hub
+from .scope import make_scope_middleware
+from .version import FEATURES, __version__
 
 logger = logging.getLogger("keryx_stream.server")
+
+
+# Served by this module itself; everything else in FEATURES comes from panels.py.
+_CORE_FEATURES = {"stream", "stream.chat_key", "publish", "toolsets"}
 
 
 def _unauthorized(web):
@@ -51,7 +62,11 @@ def build_app(config) -> object:
         return None
 
     async def handle_health(request):
-        return web.json_response({"ok": True, "plugin": "keryx-stream"})
+        features = [f for f in FEATURES if f in _CORE_FEATURES or request.app.get("keryx_panels")]
+        features += ["proxy"] if config.upstream_url else []
+        return web.json_response({
+            "ok": True, "plugin": "keryx-stream", "version": __version__, "features": features,
+        })
 
     async def handle_stream(request: web.Request) -> web.StreamResponse:
         auth_err = check_auth(request)
@@ -166,10 +181,25 @@ def build_app(config) -> object:
         hub.publish_threadsafe(platform, chat_id, event, text)
         return web.json_response({"ok": True})
 
-    app = web.Application()
+    app = web.Application(middlewares=[make_scope_middleware()])
     app.router.add_get("/keryx/health", handle_health)
     app.router.add_get("/keryx/stream", handle_stream)
     app.router.add_post("/keryx/publish", handle_publish)
     app.router.add_get("/keryx/toolsets", handle_toolsets_get)
     app.router.add_put("/keryx/toolsets/{name}", handle_toolset_put)
+    if config.panels:
+        # The panels lean on Hermes internals; the stream must not go down with
+        # them if a Hermes release moves something they import.
+        try:
+            from .panels import register_panel_routes
+            register_panel_routes(app.router, check_auth)
+            app["keryx_panels"] = True
+        except Exception:
+            logger.warning("keryx-stream: panel routes unavailable on this Hermes — "
+                           "streaming and toolsets still served", exc_info=True)
+    if config.upstream_url:
+        from .proxy import make_proxy_handler
+        relay, cleanup = make_proxy_handler(config.upstream_url, check_auth)
+        app.router.add_route("*", "/{tail:.*}", relay)
+        app.on_cleanup.append(cleanup)
     return app
