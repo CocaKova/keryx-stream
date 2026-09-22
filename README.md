@@ -138,10 +138,10 @@ Then in Keryx → Settings → Gateways → **Hermes Link**: Gateway URL
 ln -s "$PWD/keryx_stream" ~/.hermes/plugins/keryx_stream
 ```
 
-**pip install** — discovered via the `hermes_agent.plugins` entry point:
+**pip install from a clone** — discovered via the `hermes_agent.plugins` entry point (the package is not on PyPI):
 
 ```bash
-pip install keryx-stream          # or: pip install -e .
+pip install -e .
 ```
 
 </details>
