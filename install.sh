@@ -54,14 +54,21 @@ YAML
 fi
 
 echo
-if [[ -n "${KERYX_STREAM_TOKEN:-}" || -n "${API_SERVER_KEY:-}" ]]; then
-  echo "✓ bearer token found in the environment"
+ENV_FILE="$HERMES_HOME/.env"
+if [[ -n "${KERYX_STREAM_TOKEN:-}" || -n "${API_SERVER_KEY:-}" ]] ||
+   { [[ -f "$ENV_FILE" ]] && grep -Eq '^(KERYX_STREAM_TOKEN|API_SERVER_KEY)=.+' "$ENV_FILE"; }; then
+  echo "✓ bearer token found (KERYX_STREAM_TOKEN or API_SERVER_KEY)"
 else
-  echo "→ Set a bearer token (secret): export KERYX_STREAM_TOKEN=... (or reuse API_SERVER_KEY)"
+  echo "→ Set a bearer token (secret) in $ENV_FILE: KERYX_STREAM_TOKEN=... (or reuse API_SERVER_KEY)"
+  echo "  Without one the plugin refuses every request."
 fi
 
 echo
-echo "Restart the Hermes gateway to load the plugin. Verify: curl -s localhost:8646/keryx/health"
-echo "Note: live token streaming needs a hermes-agent with the stream observer hooks"
-echo "      (NousResearch/hermes-agent#65077); until then toolsets work and streaming"
-echo "      logs a one-line notice."
+echo "Next:"
+echo "  1. hermes plugins enable keryx-stream     # user plugins load only once enabled"
+echo "  2. hermes gateway restart"
+echo "  3. curl -s localhost:8646/keryx/health     # version + feature list"
+echo "  4. Keryx → Settings → Gateways → Hermes Link: http://<this-host>:8646 + your key → Test link"
+echo
+echo "Needs a hermes-agent with the shipped stream observer hooks (on_stream_start/"
+echo "delta/end). After a Hermes update, \`hermes plugins compat\` reports retired imports."

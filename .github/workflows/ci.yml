@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 9 * * *"   # nightly: catch hermes-agent main drifting under us
+  workflow_dispatch:
+
+jobs:
+  unit:
+    # The plugin on its own: lint + the tests that need no Hermes tree.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e '.[dev]' ruff
+      - run: ruff check .
+      - run: pytest -q
+
+  against-hermes-main:
+    # The whole suite inside a fresh hermes-agent main: panel routes against
+    # Hermes' real config defaults / kanban / skills code, Hermes' own retired-
+    # import scanner over this package, and the hook names we register.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          path: hermes-agent
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install hermes-agent and the plugin
+        run: |
+          pip install -e ./hermes-agent
+          pip install -e '.[dev]'
+      - name: Tests against hermes-agent main
+        env:
+          HERMES_AGENT_ROOT: ${{ github.workspace }}/hermes-agent
+          HERMES_HOME: ${{ runner.temp }}/hermes-home
+        run: |
+          mkdir -p "$HERMES_HOME"
+          git -C hermes-agent log --oneline -1
+          pytest -q -rs
