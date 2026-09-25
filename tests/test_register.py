@@ -4,60 +4,82 @@ import json
 import keryx_stream
 from keryx_stream import PluginConfig, _make_hook_callbacks, load_config, register
 
+_ALL_HOOKS = [
+    "on_interim_message", "on_stream_delta", "on_stream_end", "on_stream_start",
+    "post_api_request", "post_auxiliary_call", "post_llm_call", "post_tool_call",
+    "pre_auxiliary_call", "pre_gateway_dispatch", "pre_tool_call",
+    "subagent_start", "subagent_stop",
+]
+
+
+def _cbs(publish, **cfg):
+    """Hook callbacks with the stop finisher run inline (deterministic tests)."""
+    return _make_hook_callbacks(PluginConfig(**cfg), publish, background=False)
+
 
 def test_stream_callbacks_publish_expected_events(monkeypatch):
     published = []
-    cbs = _make_hook_callbacks(PluginConfig(default_platform="matrix"), lambda *a: published.append(a))
+    cbs = _cbs(lambda *a: published.append(a), default_platform="matrix", stop_quiet_ms=0)
 
-    cbs["on_stream_start"](session_id="s1", surface="cli")
-    cbs["on_stream_delta"](session_id="s1", surface="cli", delta="hi")
-    cbs["on_stream_delta"](session_id="s1", surface="cli", delta="hm", kind="reasoning")
-    cbs["on_interim_message"](session_id="s1", surface="cli", text="part done", already_streamed=False)
-    cbs["on_stream_end"](session_id="s1", surface="cli", final_text="done", finished=True)
+    cbs["on_stream_start"](session_id="s1", surface="cli", turn_id="t1", iteration=1)
+    cbs["on_stream_delta"](session_id="s1", surface="cli", delta="hi", turn_id="t1", iteration=1)
+    cbs["on_stream_delta"](session_id="s1", surface="cli", delta="hm", kind="reasoning",
+                           turn_id="t1", iteration=1)
+    cbs["on_interim_message"](session_id="s1", surface="cli", text="part done",
+                              already_streamed=False, turn_id="t1")
+    cbs["on_stream_end"](session_id="s1", surface="cli", final_text="hi", finished=True, turn_id="t1")
+    # on_stream_end is per API call — the turn is NOT over yet.
+    assert [e for _, _, e, _ in published] == ["start", "delta", "reasoning", "interim"]
 
+    cbs["post_llm_call"](session_id="s1", turn_id="t1", assistant_response="hi")
     assert published == [
         ("cli", "s1", "start", None),
         ("cli", "s1", "delta", "hi"),
         ("cli", "s1", "reasoning", "hm"),
         ("cli", "s1", "interim", "part done"),
-        ("cli", "s1", "stop", "done"),
+        ("cli", "s1", "stop", "hi"),
     ]
 
 
-def test_tool_iteration_end_is_segment_final_answer_is_stop(monkeypatch):
-    """on_stream_end fires per API call: the tool iteration ends with final_text=''
-    (segment, channel stays open); the last iteration carries the answer (stop)."""
+def test_text_before_a_tool_call_is_a_segment_not_a_stop(monkeypatch):
+    """A tool-calling API call can carry text ("Let me read that file.") — the
+    0.3 heuristic ended the turn there. The boundary is now inferred from the
+    iteration counter on the delta thread; the stop comes from post_llm_call."""
     published = []
-    cbs = _make_hook_callbacks(PluginConfig(default_platform="cli"), lambda *a: published.append(a))
+    cbs = _cbs(lambda *a: published.append(a), default_platform="cli", stop_quiet_ms=0)
 
-    cbs["on_stream_start"](session_id="s1", surface="cli")
-    cbs["on_stream_end"](session_id="s1", surface="cli", final_text="", finished=True)  # tool iter
-    cbs["pre_tool_call"](session_id="s1", surface="cli", tool_name="terminal", args={"command": "echo"})
-    cbs["post_tool_call"](session_id="s1", surface="cli", tool_name="terminal",
-                          result="out", status="ok", duration_ms=10)
-    cbs["on_stream_start"](session_id="s1", surface="cli")
-    cbs["on_stream_delta"](session_id="s1", surface="cli", delta="answer")
-    cbs["on_stream_end"](session_id="s1", surface="cli", final_text="answer", finished=True)
+    cbs["on_stream_start"](session_id="s1", surface="cli", turn_id="t1", iteration=1)
+    cbs["on_stream_delta"](session_id="s1", surface="cli", delta="Reading it.", turn_id="t1", iteration=1)
+    cbs["on_stream_end"](session_id="s1", surface="cli", final_text="Reading it.", finished=True,
+                         turn_id="t1")
+    cbs["pre_tool_call"](session_id="s1", tool_name="read_file", args={"path": "a"}, turn_id="t1",
+                         tool_call_id="c1")
+    cbs["post_tool_call"](session_id="s1", tool_name="read_file", result="out", status="ok",
+                          duration_ms=10, turn_id="t1", tool_call_id="c1")
+    cbs["on_stream_start"](session_id="s1", surface="cli", turn_id="t1", iteration=2)
+    cbs["on_stream_delta"](session_id="s1", surface="cli", delta="answer", turn_id="t1", iteration=2)
+    cbs["on_stream_end"](session_id="s1", surface="cli", final_text="answer", finished=True, turn_id="t1")
+    cbs["post_llm_call"](session_id="s1", turn_id="t1", assistant_response="answer")
 
-    assert published == [
-        ("cli", "s1", "start", None),
-        ("cli", "s1", "segment", None),
-        ("cli", "s1", "tool", json.dumps({"phase": "start", "name": "terminal",
-                                          "preview": str({"command": "echo"})})),
-        ("cli", "s1", "tool", json.dumps({"phase": "end", "name": "terminal", "ok": True,
-                                          "ms": 10, "result": "out", "result_len": 3})),
-        ("cli", "s1", "start", None),
-        ("cli", "s1", "delta", "answer"),
-        ("cli", "s1", "stop", "answer"),
+    assert [(e, t if e != "tool" else json.loads(t)["phase"]) for _, _, e, t in published] == [
+        ("start", None), ("delta", "Reading it."),
+        ("tool", "start"), ("tool", "end"),
+        ("start", None), ("segment", None), ("delta", "answer"),
+        ("stop", "answer"),
     ]
 
 
-def test_error_end_is_stop_even_with_empty_text(monkeypatch):
+def test_error_end_does_not_stop_the_turn_but_the_watchdog_does(monkeypatch):
     published = []
-    cbs = _make_hook_callbacks(PluginConfig(default_platform="cli"), lambda *a: published.append(a))
+    cbs = _cbs(lambda *a: published.append(a), default_platform="cli", idle_stop_s=5)
+    cbs["on_stream_start"](session_id="s1", surface="cli", turn_id="t1")
     cbs["on_stream_end"](session_id="s1", surface="cli", final_text="",
-                         finished=False, error="HTTP 500")
-    assert published == [("cli", "s1", "stop", "")]
+                         finished=False, error="HTTP 500", turn_id="t1")
+    assert [e for _, _, e, _ in published] == ["start"]  # a retry may follow
+    tracker = cbs.tracker
+    assert tracker.sweep(now=tracker._clock() + 1) == 0      # not idle long enough
+    assert tracker.sweep(now=tracker._clock() + 60) == 1     # interrupted / empty turn
+    assert published[-1] == ("cli", "s1", "stop", None)
 
 
 def test_tool_callbacks_publish_tool_frames(monkeypatch):
@@ -97,8 +119,8 @@ def test_delta_callback_ignores_empty_or_missing(monkeypatch):
     cbs = _make_hook_callbacks(PluginConfig(), lambda *a: published.append(a))
     cbs["on_stream_delta"](session_id="s1", delta="")     # empty delta
     cbs["on_stream_delta"](delta="hi")                    # no session id
-    cbs["on_stream_end"](session_id="s1", final_text="done")  # surface falls back to default
-    assert published == [(PluginConfig().default_platform, "s1", "stop", "done")]
+    cbs["on_stream_start"](session_id="s1")               # surface falls back to default
+    assert published == [(PluginConfig().default_platform, "s1", "start", None)]
 
 
 def test_surface_falls_back_to_config_default_when_absent(monkeypatch):
@@ -118,12 +140,15 @@ def test_interim_already_streamed_is_suppressed(monkeypatch):
 def test_tool_result_is_clipped_middle(monkeypatch):
     published = []
     cbs = _make_hook_callbacks(PluginConfig(), lambda *a: published.append(a))
-    big = "x" * 5000
+    big = "a" * 3000 + "b" * 2000
     cbs["post_tool_call"](session_id="s1", tool_name="web_extract", result=big, status="ok")
     frame = json.loads(published[0][3])
-    assert len(frame["result"]) < 3000
+    assert len(frame["result"]) < 2500
     assert frame["result_len"] == 5000
-    assert "truncated" in frame["result"]
+    # Both ends survive (a transform_tool_result verdict lives in the tail) and
+    # the elision says how much is missing — same shape as the in-tree patch.
+    assert frame["result"].startswith("a") and frame["result"].endswith("b")
+    assert "2,600 chars elided" in frame["result"]
 
 
 def test_load_config_reads_block_and_env(monkeypatch):
@@ -166,10 +191,7 @@ def test_register_wires_all_hooks_and_starts_server(monkeypatch):
             registered.append(name)
 
     register(FakeCtx())
-    assert sorted(registered) == [
-        "on_interim_message", "on_stream_delta", "on_stream_end", "on_stream_start",
-        "post_tool_call", "pre_gateway_dispatch", "pre_tool_call",
-    ]
+    assert sorted(registered) == sorted(_ALL_HOOKS)
 
 
 def test_register_forwards_when_port_taken(monkeypatch):
@@ -180,7 +202,7 @@ def test_register_forwards_when_port_taken(monkeypatch):
     created = []
 
     class FakeForwarder:
-        def __init__(self, url, token):
+        def __init__(self, url, token, resolve=None):
             created.append((url, token))
             self.publish = lambda *a: None
 
@@ -194,7 +216,7 @@ def test_register_forwards_when_port_taken(monkeypatch):
             registered.append(name)
 
     register(FakeCtx())
-    assert len(registered) == 7
+    assert len(registered) == len(_ALL_HOOKS)
     assert created and created[0][0].endswith("/keryx/publish")
 
 
@@ -234,7 +256,7 @@ def test_gateway_turn_also_publishes_under_its_chat_key():
     """The app on a chat transport subscribes by room id — it never learns the
     session id — so a gateway turn must reach that key too."""
     published = []
-    cbs = _make_hook_callbacks(PluginConfig(default_platform="matrix"), lambda *a: published.append(a))
+    cbs = _cbs(lambda *a: published.append(a), default_platform="matrix")
     store = _Store({"s1": _Entry(_Origin("matrix", "!room:hs"))})
     assert cbs["pre_gateway_dispatch"](event=object(), gateway=None, session_store=store) is None
 
@@ -242,6 +264,7 @@ def test_gateway_turn_also_publishes_under_its_chat_key():
     cbs["on_stream_delta"](session_id="s1", surface="matrix", delta="a")
     cbs["on_stream_delta"](session_id="s1", surface="matrix", delta="b")
     cbs["on_stream_end"](session_id="s1", surface="matrix", final_text="ab")
+    cbs["post_llm_call"](session_id="s1", assistant_response="ab")
 
     assert [p for p in published if p[1] == "!room:hs"] == [
         ("matrix", "!room:hs", "start", None),
@@ -276,3 +299,33 @@ def test_tool_frames_follow_the_sessions_surface():
     # a session never seen streaming still falls back to the default platform
     cbs["pre_tool_call"](session_id="s2", tool_name="terminal", args={})
     assert published[-1][:2] == ("matrix", "s2")
+
+
+def test_manifest_matches_the_code():
+    """plugin.yaml declares every hook register() wires, the package version,
+    and the same Hermes floor version.py reports on /keryx/health."""
+    from pathlib import Path
+
+    from keryx_stream.version import REQUIRES_HERMES, __version__
+
+    text = (Path(keryx_stream.__file__).parent / "plugin.yaml").read_text()
+    declared = [line.strip()[2:] for line in text.splitlines() if line.startswith("  - ")]
+    assert sorted(declared) == sorted(_ALL_HOOKS)
+    assert f"version: {__version__}\n" in text
+    assert f'requires_hermes: "{REQUIRES_HERMES}"' in text
+
+
+def test_interim_already_in_the_open_text_run_is_suppressed():
+    """Commentary that went out as deltas is not re-sent as interim, even when
+    Hermes flags it already_streamed=False; new commentary still goes out."""
+    published = []
+    cbs = _cbs(lambda *a: published.append(a))
+    cbs["on_stream_start"](session_id="s1", surface="cli", turn_id="t")
+    cbs["on_stream_delta"](session_id="s1", surface="cli", delta="Plan: read the", turn_id="t", iteration=1)
+    cbs["on_stream_delta"](session_id="s1", surface="cli", delta=" file.\n\n", turn_id="t", iteration=1)
+    cbs["on_interim_message"](session_id="s1", surface="cli", text="Plan: read the file.",
+                              already_streamed=False, turn_id="t")
+    cbs["on_interim_message"](session_id="s1", surface="cli", text="Something else.",
+                              already_streamed=False, turn_id="t")
+    interims = [t for _, _, e, t in published if e == "interim"]
+    assert interims == ["Something else."]
