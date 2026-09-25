@@ -1,6 +1,7 @@
 name: keryx-stream
-version: 0.3.0
-description: "Live token streaming + tool mirroring for the Keryx Android client. Subscribes to the shipped observer hooks (on_stream_start/delta/end, on_interim_message, pre/post_tool_call — all carry session_id) and mirrors each turn's tokens and tool activity to its own SSE side-channel (GET /keryx/stream) so the app renders turns live while chat stays on Matrix; non-gateway processes (hermes chat one-shots) auto-forward their hook events to the hub owner via POST /keryx/publish. Also serves GET/PUT /keryx/toolsets. No core patches. Config: keryx_stream block in config.yaml; bearer token from KERYX_STREAM_TOKEN or API_SERVER_KEY."
+version: 0.4.0
+requires_hermes: ">=0.21.3"
+description: "Live token streaming + tool mirroring for the Keryx Android client, over Hermes' plugin hooks only. Mirrors each turn (text and reasoning deltas, tool frames with inline edit diffs, one held stop per turn, usage, compaction status, the subagent wing) to its own SSE side-channel (GET /keryx/stream) so the app renders turns live while chat stays on its transport; non-gateway processes (hermes chat one-shots, cron/kanban workers) forward their hook events to the hub owner via POST /keryx/publish. Adds an llm_request middleware for the reasoning dial on local brains, the app's /keryx/* panel routes, and GET /keryx/health with a feature list derived from what the running Hermes provides. No core patches. Config: keryx_stream block in config.yaml; bearer token from KERYX_STREAM_TOKEN or API_SERVER_KEY (env, the Hermes home's .env, or the profile secret scope)."
 author: CocaKova
 kind: backend
 provides_hooks:
@@ -10,4 +11,10 @@ provides_hooks:
   - on_interim_message
   - pre_tool_call
   - post_tool_call
+  - post_api_request
+  - post_llm_call
+  - subagent_start
+  - subagent_stop
+  - pre_auxiliary_call
+  - post_auxiliary_call
   - pre_gateway_dispatch
