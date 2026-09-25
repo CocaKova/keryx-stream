@@ -2,9 +2,11 @@
 
 Three sources, never a guess:
 
-- **registered** — the hooks / middleware ``register()`` got Hermes to accept.
-  A hook Hermes does not know is refused at registration, so this set is what
-  the running Hermes actually provides.
+- **registered** — the hooks / middleware ``register()`` handed to Hermes.
+  Hermes stores an unknown hook name with only a warning
+  (hermes_cli/plugins.py ``_track_callback``), so ``register()`` checks each
+  name against the host's ``VALID_HOOKS`` first and skips the ones it lacks;
+  this set is what the running Hermes actually provides.
 - **seen** — payload traits observed on real hook calls (``post_tool_call``
   carried a ``tool_call_id``, stream deltas carried an ``iteration``). A field a
   Hermes release dropped simply never shows up here.
