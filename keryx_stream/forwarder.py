@@ -18,6 +18,7 @@ import json
 import logging
 import queue
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -26,14 +27,20 @@ logger = logging.getLogger("keryx_stream.forwarder")
 _QUEUE_MAX = 2048
 _POST_TIMEOUT_S = 5.0
 _STOP = object()
+_TOKEN_RETRY_S = 30.0
 
 
 class Forwarder:
     """Bearer-authed fire-and-forget publisher to the hub owner."""
 
-    def __init__(self, url: str, token: str):
+    def __init__(self, url: str, token: str, resolve=None):
         self._url = url
         self._token = token
+        # A worker that started before its credentials were reachable (scrubbed
+        # env, secret source hydrated late) retries resolution instead of
+        # posting unauthenticated for the life of the process.
+        self._resolve = resolve
+        self._next_resolve = 0.0
         self._events: queue.Queue = queue.Queue(maxsize=_QUEUE_MAX)
         self._thread = threading.Thread(
             target=self._worker, name="keryx-stream-forwarder", daemon=True
@@ -66,7 +73,18 @@ class Forwarder:
             finally:
                 self._events.task_done()
 
+    def _current_token(self) -> str:
+        resolve = getattr(self, "_resolve", None)
+        if not self._token and resolve is not None and time.monotonic() >= getattr(self, "_next_resolve", 0.0):
+            self._next_resolve = time.monotonic() + _TOKEN_RETRY_S
+            try:
+                self._token = (resolve() or ("", ""))[0]
+            except Exception:
+                logger.debug("keryx-stream: token re-resolve failed", exc_info=True)
+        return self._token
+
     def _post(self, platform: str, chat_id: str, event: str, text) -> None:
+        token = self._current_token()
         body = json.dumps(
             {"platform": platform, "chat_id": chat_id, "event": event, "text": text}
         ).encode("utf-8")
@@ -76,7 +94,7 @@ class Forwarder:
             method="POST",
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {self._token}",
+                "Authorization": f"Bearer {token}",
             },
         )
         try:
