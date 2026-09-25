@@ -24,145 +24,36 @@ from typing import Any
 
 logger = logging.getLogger("keryx_stream.panels")
 
-def _is_mistral_native(model: str) -> bool:
-    """True for models served via vLLM's ``--tokenizer-mode mistral``.
-
-    Those tokenizers hard-reject any request carrying ``chat_template`` or
-    ``chat_template_kwargs`` with HTTP 400 ("chat_template is not supported for
-    Mistral tokenizers"), so the enable_thinking switch must never be sent to them.
-    Same name heuristic as the graphiti memory plugin's thinking client.
-    """
-    normalized = (model or "").strip().lower()
-    return normalized.startswith("mistral") or "/mistral" in normalized
-
-
-def _is_glm53(model: str) -> bool:
-    """True for a GLM-5.3-family model served locally (the MiaAI dual-Spark kit's template)."""
-    m = (model or "").strip().lower()
-    return any(t in m for t in ("glm-5.3", "glm-5-3", "glm-5p3", "glm53"))
+# The local-brain thinking tables live with the middleware that sends them
+# (thinking.py); the capabilities route reads the same table so the app's
+# ladder and the wire can never disagree.
+from .thinking import (  # noqa: E402
+    GLM53_LOCAL_EFFORTS,  # noqa: F401 — re-exported for callers of the 0.3 names
+    GLM53_LOCAL_OVERRIDES,  # noqa: F401
+    LOCAL_TEMPLATE_EFFORTS,
+    LOCAL_TEMPLATE_OVERRIDES,  # noqa: F401
+)
+from .thinking import is_dsv41 as _is_dsv41  # noqa: E402,F401
+from .thinking import is_glm53 as _is_glm53  # noqa: E402,F401
+from .thinking import is_mistral_native as _is_mistral_native  # noqa: E402
+from .thinking import local_template_family as _local_template_family  # noqa: E402
+from .thinking import local_wire_effort as _local_wire_effort  # noqa: E402
 
 
-# The local GLM-5.3 chat template reads ``chat_template_kwargs.reasoning_effort`` and accepts
-# exactly ``low`` / ``high``; anything else (``medium``, ``xhigh``, unset) is served as ``max``
-# — measured 2026-09-11 against the live endpoint (medium == max byte-for-byte). So the honest
-# ladder is low / high / max, and Hermes's own clamp (nearest WEAKER, never escalate) maps the
-# generic levels onto it; ``enable_thinking: false`` is the template's real off switch.
-GLM53_LOCAL_EFFORTS = ("low", "high", "max")
-GLM53_LOCAL_OVERRIDES = {"xhigh": "max", "ultra": "max"}
-
-
-def _is_dsv41(model: str) -> bool:
-    """True for a DeepSeek-V4.1-family model served locally (the MiaAI dual-Spark kit's template)."""
-    m = (model or "").strip().lower()
-    return any(t in m for t in ("deepseek-v4.1", "deepseek-v41", "deepseek_v4.1", "deepseek_v41", "deepseek-v4-1", "dsv41"))
-
-
-# Local (provider ``custom``) brains whose chat template takes a GRADED ``reasoning_effort``
-# kwarg, keyed by template family. Each ladder is what the live kit template actually
-# accepts, measured — not what the model card says:
-#   glm53  low / high; anything else is served as max (2026-09-11).
-#   dsv41  low / high / xhigh / max, or an int 1-100; ``medium`` is HTTP 400 (2026-09-13),
-#          so the generic ladder's medium MUST be clamped (nearest weaker → low), never sent.
-# ``enable_thinking: false`` is the real off switch on both. Adding a family here is the
-# whole job of teaching the dial a new local brain — both the wire and the phone's ladder
-# read this table.
-LOCAL_TEMPLATE_EFFORTS: dict[str, tuple] = {
-    "glm53": GLM53_LOCAL_EFFORTS,
-    "dsv41": ("low", "high", "xhigh", "max"),
-}
-LOCAL_TEMPLATE_OVERRIDES: dict[str, dict[str, str]] = {
-    "glm53": GLM53_LOCAL_OVERRIDES,
-    "dsv41": {"ultra": "max"},
-}
-
-
-def _local_template_family(model: str) -> str | None:
-    """The LOCAL_TEMPLATE_EFFORTS key for a locally served model, or None (on/off only)."""
-    if _is_glm53(model):
-        return "glm53"
-    if _is_dsv41(model):
-        return "dsv41"
-    return None
-
-
-def _local_wire_effort(effort: str, family: str) -> str | None:
-    """The template level for a Hermes effort word on ``family``; None when nothing is sent."""
-    e = (effort or "").strip().lower()
-    if not e:
-        return None
-    supported = LOCAL_TEMPLATE_EFFORTS.get(family) or ()
-    overrides = LOCAL_TEMPLATE_OVERRIDES.get(family) or {}
+def _hermes_home() -> Path:
+    """The active Hermes home — ``HERMES_HOME`` / the routed profile — never a
+    hard-coded ``~/.hermes`` (a profile or a second install lives elsewhere)."""
     try:
-        from agent.reasoning_effort import clamp_effort
-        return clamp_effort(e, supported, overrides)
+        from hermes_constants import get_hermes_home
+
+        return Path(get_hermes_home())
     except Exception:
-        return overrides.get(e, e if e in supported else "low")
+        raw = os.environ.get("HERMES_HOME", "").strip()
+        return Path(raw) if raw else Path.home() / ".hermes"
 
 
-def _glm53_wire_effort(effort: str) -> str | None:
-    """Back-compat alias: the GLM-5.3 rung for a Hermes effort word."""
-    return _local_wire_effort(effort, "glm53")
-
-
-def apply_thinking_kwargs(agent) -> None:
-    """Map Hermes' reasoning_config onto the local brain's thinking dial.
-
-    Called from agent_init after ``_merge_custom_provider_extra_body`` (see install.py).
-    Local OpenAI-compatible brains (provider ``custom``/``custom:*``) don't understand the
-    OpenRouter-style ``extra_body.reasoning`` dial — thinking is a chat-template switch. Some
-    local chat templates additionally force-open the thought channel when enable_thinking is set
-    (for tunes that never open it voluntarily), so with this mapping ``/reasoning none`` ⇄ any
-    effort level becomes a real on/off for local-brain reasoning. Never raises.
-
-    Mistral-native exception: vLLM's ``--tokenizer-mode mistral`` rejects requests that
-    carry ``chat_template_kwargs`` outright (HTTP 400), and its thinking dial is the
-    standard top-level ``reasoning_effort`` param (only ``none``/``high`` accepted) —
-    so Mistral-named models get that mapping instead.
-    """
-    try:
-        # Kill switch for setups whose "custom" endpoint rejects unknown request fields
-        # ("custom" can point anywhere): KERYX_THINKING_KWARGS=off in ~/.hermes/.env.
-        if os.getenv("KERYX_THINKING_KWARGS", "").strip().lower() in {"0", "off", "false", "no"}:
-            return
-        provider = str(getattr(agent, "provider", "") or "").strip().lower()
-        if provider != "custom" and not provider.startswith("custom:"):
-            return
-        rc = getattr(agent, "reasoning_config", None)
-        # Only act when reasoning is explicitly configured (agent.reasoning_effort in
-        # config.yaml, or a /reasoning override). rc is None on stock installs — inject
-        # nothing, change nothing.
-        if not isinstance(rc, dict):
-            return
-        enabled = rc.get("enabled") is not False
-        overrides = dict(getattr(agent, "request_overrides", {}) or {})
-        if _is_mistral_native(str(getattr(agent, "model", "") or "")):
-            extra = dict(overrides.get("extra_body") or {})
-            extra.pop("chat_template_kwargs", None)  # scrub any stale injection
-            if extra:
-                overrides["extra_body"] = extra
-            else:
-                overrides.pop("extra_body", None)
-            overrides["reasoning_effort"] = "high" if enabled else "none"
-            agent.request_overrides = overrides
-            return
-        extra = dict(overrides.get("extra_body") or {})
-        ctk = dict(extra.get("chat_template_kwargs") or {})
-        ctk["enable_thinking"] = enabled
-        family = _local_template_family(str(getattr(agent, "model", "") or ""))
-        if family:
-            # A graded local template (GLM-5.3, DeepSeek-V4.1): send the level so the session's
-            # /reasoning pick (or the profile default) is what the brain actually runs, clamped
-            # onto the rungs that template accepts (a stray "medium" would 400 on DeepSeek).
-            wire = _local_wire_effort(str(rc.get("effort") or ""), family) if enabled else None
-            if wire:
-                ctk["reasoning_effort"] = wire
-            else:
-                ctk.pop("reasoning_effort", None)
-        extra["chat_template_kwargs"] = ctk
-        overrides["extra_body"] = extra
-        agent.request_overrides = overrides
-    except Exception:
-        logger.debug("apply_thinking_kwargs failed", exc_info=True)
+def _config_file() -> Path:
+    return _hermes_home() / "config.yaml"
 
 
 # The generic effort ladder — what an OpenAI-compatible cloud wire accepts when no
@@ -268,6 +159,22 @@ def _session_route(session_id: str) -> dict[str, Any]:
     return out
 
 
+def _expand_secret_ref(raw: str) -> str:
+    """Resolve a ``${VAR}`` api_key reference the way Hermes would: the process
+    env, then the profile secret scope (a scrubbed/multiplexed process has the
+    key only there). Unresolvable → ''."""
+    value = os.path.expandvars(raw or "")
+    if not value.startswith("${"):
+        return value
+    name = value[2:].split("}", 1)[0].strip()
+    try:
+        from agent.secret_scope import get_secret
+
+        return str(get_secret(name, "") or "")
+    except Exception:
+        return ""
+
+
 def _reasoning_capabilities(
     model: str | None = None,
     provider: str | None = None,
@@ -292,11 +199,9 @@ def _reasoning_capabilities(
     room_profiles: dict[str, str] = {}
     local_slugs: set = set()
     try:
-        from pathlib import Path
-
         import yaml
 
-        cfg = yaml.safe_load((Path.home() / ".hermes" / "config.yaml").read_text()) or {}
+        cfg = yaml.safe_load(_config_file().read_text()) or {}
         model_cfg = cfg.get("model") or {}
         cfg_provider = str(model_cfg.get("provider", "") or "").strip().lower()
         # ``model.default`` is the key current configs use; ``model``/``name`` are legacy spellings.
@@ -323,9 +228,7 @@ def _reasoning_capabilities(
                 # bearer Hermes sends, resolving a ``${VAR}`` reference from the environment.
                 _probe_key = str((providers_cfg.get("custom") or {}).get("api_key") or "").strip() \
                     if isinstance(providers_cfg, dict) else ""
-                _probe_key = os.path.expandvars(_probe_key)
-                if _probe_key.startswith("${"):
-                    _probe_key = ""
+                _probe_key = _expand_secret_ref(_probe_key)
                 _req = _rq.Request(base.rstrip("/") + "/models")
                 if _probe_key:
                     _req.add_header("Authorization", "Bearer " + _probe_key)
@@ -533,6 +436,9 @@ def make_capabilities_handler(check_auth):
 # Kanban board (Keryx 1.6 "Missions") — read/create/comment over the agent's
 # task board. State TRANSITIONS (complete/block/claim) stay agent-side on
 # purpose: the dispatcher owns those; the phone reads, creates, and comments.
+# The exceptions are verdicts that are the owner's job by design: /reply may
+# unblock a card waiting on its owner, /approve and /request-changes close or
+# bounce a card awaiting review — through the same kanban_db calls the CLI uses.
 #
 # The pure helpers below take an open sqlite connection and return plain
 # dicts, so they unit-test against a temp board without aiohttp or a gateway.
@@ -545,19 +451,48 @@ def make_capabilities_handler(check_auth):
 # from runtime identity: a forged author like "hermes-system" would read as a
 # system directive in future worker context.
 KANBAN_ACTOR = "keryx"
+# Author of a /reply, /approve, /request-changes — the owner's verdict on a card.
+# Fixed server-side (config, never the request): the app is the owner's own
+# device, so its word reads to the next worker as the human's, never as a
+# caller's claim. ``keryx_stream.kanban.owner`` in config.yaml names them.
+KANBAN_OWNER_DEFAULT = "owner"
+
+
+def _kanban_owner() -> str:
+    try:
+        from hermes_cli.config import load_config
+
+        block = ((load_config() or {}).get("keryx_stream") or {}).get("kanban") or {}
+        name = str(block.get("owner") or "").strip()
+        if name and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name):
+            return name
+    except Exception:
+        logger.debug("keryx kanban owner unreadable", exc_info=True)
+    return KANBAN_OWNER_DEFAULT
+
 
 # Fields safe + useful for the app. Excludes claim locks, workspace paths,
 # idempotency keys — dispatcher internals the phone has no business rendering.
 _KANBAN_SUMMARY_FIELDS = (
     "id", "title", "assignee", "status", "priority", "created_by",
     "created_at", "started_at", "completed_at", "consecutive_failures",
+    "block_kind",
 )
 _KANBAN_DETAIL_FIELDS = _KANBAN_SUMMARY_FIELDS + (
     "body", "result", "last_failure_error", "goal_mode", "max_runtime_seconds",
     "last_heartbeat_at", "workspace_kind", "project_id",
     # v0.20 per-task overrides — settable from the phone via /task/{id}/settings.
     "model_override", "provider_override", "reasoning_effort",
+    "block_recurrences", "max_retries", "skills",
 )
+
+# Card excerpts: enough for two lines on a phone; the detail sheet has the rest.
+_KANBAN_EXCERPT = 240
+# Kinds a worker parks by itself and clears by itself — not the owner's job.
+_KANBAN_SELF_CLEARING_BLOCKS = ("dependency", "transient")
+# A crash/failure streak is history once a later run ended some other way.
+_KANBAN_FAILURE_DIAGS = ("repeated_crashes", "repeated_failures")
+_KANBAN_FAILED_OUTCOMES = ("crashed", "timed_out", "spawn_failed", "gave_up")
 
 
 def _moved(new_module: str, old_module: str, name: str):
@@ -590,33 +525,219 @@ def _task_dict(task: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     return d
 
 
+def _excerpt(text: str | None) -> str | None:
+    if not text:
+        return None
+    text = text.strip()
+    return text if len(text) <= _KANBAN_EXCERPT else text[: _KANBAN_EXCERPT - 1].rstrip() + "…"
+
+
+def _placeholders(ids: list[str]) -> str:
+    return ",".join("?" * len(ids))
+
+
+def _latest_event_payloads(conn: Any, task_ids: list[str], kind: str) -> dict[str, dict[str, Any]]:
+    """{task_id: payload of its newest [kind] event} in one query."""
+    if not task_ids:
+        return {}
+    rows = conn.execute(
+        f"SELECT task_id, payload FROM task_events WHERE kind = ? AND task_id IN ({_placeholders(task_ids)}) "
+        "ORDER BY id ASC",
+        (kind, *task_ids),
+    ).fetchall()
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        payload = r["payload"]
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {"reason": payload}
+        out[r["task_id"]] = payload if isinstance(payload, dict) else {}
+    return out
+
+
+def _kanban_diagnostics(kb: Any, conn: Any, task_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """{task_id: [diagnostic]} — the same rules `hermes kanban diag` and the
+    dashboard run (hermes_cli.kanban_diagnostics), three aggregate queries.
+    Each diagnostic gains `stale`: a crash/failure streak that a later run has
+    already outlived, so the phone can dim it instead of crying wolf. Never
+    raises — a missing module or a broken rule costs the badge, not the board."""
+    if not task_ids:
+        return {}
+    try:
+        from hermes_cli import kanban_diagnostics as kd
+        from hermes_cli.config import load_config
+
+        cfg = kd.config_from_runtime_config(load_config())
+        ph = _placeholders(task_ids)
+        rows = conn.execute(f"SELECT * FROM tasks WHERE id IN ({ph})", tuple(task_ids)).fetchall()
+
+        def by_task(table: str) -> dict[str, list]:
+            grouped: dict[str, list] = {tid: [] for tid in task_ids}
+            for row in conn.execute(
+                f"SELECT * FROM {table} WHERE task_id IN ({ph}) ORDER BY id", tuple(task_ids)
+            ).fetchall():
+                grouped.setdefault(row["task_id"], []).append(row)
+            return grouped
+
+        events, runs = by_task("task_events"), by_task("task_runs")
+        graphs = kb.task_graph_contexts(conn, task_ids) if hasattr(kb, "task_graph_contexts") else {}
+        out: dict[str, list[dict[str, Any]]] = {}
+        for r in rows:
+            tid = r["id"]
+            diags = kd.compute_task_diagnostics(r, events[tid], runs[tid], config=cfg, graph=graphs.get(tid))
+            if not diags:
+                continue
+            last_run = runs[tid][-1] if runs[tid] else None
+            outlived = bool(
+                last_run is not None
+                and last_run["outcome"] is not None
+                and last_run["outcome"] not in _KANBAN_FAILED_OUTCOMES
+            )
+            items = []
+            for d in diags:
+                item = d.to_dict()
+                item["stale"] = outlived and item.get("kind") in _KANBAN_FAILURE_DIAGS
+                items.append(item)
+            out[tid] = items
+        return out
+    except Exception:
+        logger.debug("keryx kanban diagnostics unavailable", exc_info=True)
+        return {}
+
+
+def _diag_badge(diags: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """{count, severity, stale} for a card — severity of the worst live one."""
+    if not diags:
+        return None
+    order = ("warning", "error", "critical")
+    live = [d for d in diags if not d.get("stale")]
+    pool = live or diags
+    worst = max(pool, key=lambda d: order.index(d["severity"]) if d.get("severity") in order else -1)
+    return {"count": len(diags), "severity": worst.get("severity"), "stale": not live}
+
+
+def _needs_you(status: str, block_kind: str | None) -> bool:
+    """The card is waiting on its owner: a review, or a block no worker will
+    clear by itself (needs_input / capability / an unkinded manual block)."""
+    if status == "review":
+        return True
+    return status == "blocked" and block_kind not in _KANBAN_SELF_CLEARING_BLOCKS
+
+
+def _review_digests(conn: Any, task_ids: list[str]) -> dict[str, str]:
+    """{task_id: body of its newest "REVIEW DIGEST" comment} — the lane-autonomy digest a
+    worker posts beside kanban_request_review, which says more than the handoff line."""
+    if not task_ids:
+        return {}
+    rows = conn.execute(
+        f"SELECT task_id, body FROM task_comments WHERE task_id IN ({_placeholders(task_ids)}) "
+        "AND UPPER(SUBSTR(LTRIM(body), 1, 13)) = 'REVIEW DIGEST' ORDER BY id ASC",
+        tuple(task_ids),
+    ).fetchall()
+    return {r["task_id"]: r["body"] for r in rows}
+
+
+def _ask_of(
+    status: str, blocked: dict[str, Any], review: dict[str, Any], summary: str | None,
+    digest: str | None = None,
+) -> str | None:
+    """What the card is asking for, in the worker's own words."""
+    if status == "blocked":
+        return (blocked.get("reason") or "").strip() or None
+    if status == "review":
+        if digest:
+            return digest.strip()
+        asked = (review.get("summary") or "").strip()
+        # A one-character handoff ('x') is a CLI slip; the run summary says more.
+        return asked if len(asked) > 3 else (summary or asked or None)
+    return None
+
+
 def kanban_board_snapshot(kb: Any, conn: Any) -> dict[str, Any]:
     """Tasks grouped by raw status. Column layout is the client's decision —
     grouping by status here means a future status never breaks old apps."""
     tasks = kb.list_tasks(conn, include_archived=False, order_by="priority")
+    ids = [t.id for t in tasks]
+    summaries = kb.latest_summaries(conn, ids) if hasattr(kb, "latest_summaries") else {}
+    waiting = [t.id for t in tasks if t.status in ("blocked", "review")]
+    blocked = _latest_event_payloads(conn, waiting, "blocked")
+    review = _latest_event_payloads(conn, waiting, "review_requested")
+    digests = _review_digests(conn, [t.id for t in tasks if t.status == "review"])
+    diags = _kanban_diagnostics(kb, conn, ids)
     by_status: dict[str, list] = {}
     for t in tasks:
-        by_status.setdefault(t.status, []).append(_task_dict(t, _KANBAN_SUMMARY_FIELDS))
+        d = _task_dict(t, _KANBAN_SUMMARY_FIELDS)
+        summary = summaries.get(t.id)
+        d["latest_summary_excerpt"] = _excerpt(summary)
+        d["ask_excerpt"] = _excerpt(
+            _ask_of(t.status, blocked.get(t.id, {}), review.get(t.id, {}), summary, digests.get(t.id))
+        )
+        d["needs_you"] = _needs_you(t.status, getattr(t, "block_kind", None))
+        d["diagnostics"] = _diag_badge(diags.get(t.id, []))
+        by_status.setdefault(t.status, []).append(d)
     return {
         "board": kb.get_current_board(),
         "tasks": by_status,
         "counts": {s: len(v) for s, v in by_status.items()},
+        "needs_you": sum(1 for v in by_status.values() for d in v if d["needs_you"]),
     }
+
+
+def _run_dict(r: Any) -> dict[str, Any]:
+    ended = getattr(r, "ended_at", None)
+    return {
+        "id": r.id, "profile": r.profile, "status": r.status, "outcome": r.outcome,
+        "summary": r.summary, "error": r.error,
+        "started_at": r.started_at, "ended_at": ended,
+        "duration_seconds": (ended - r.started_at) if ended and r.started_at else None,
+    }
+
+
+def _link_rows(kb: Any, conn: Any, ids: list[str]) -> list[dict[str, Any]]:
+    out = []
+    for tid in ids:
+        t = kb.get_task(conn, tid)
+        out.append({"id": tid, "title": t.title if t else tid, "status": t.status if t else None})
+    return out
 
 
 def kanban_task_detail(kb: Any, conn: Any, task_id: str) -> dict[str, Any] | None:
     task = kb.get_task(conn, task_id)
     if task is None:
         return None
+    detail = _task_dict(task, _KANBAN_DETAIL_FIELDS)
+    summary = kb.latest_summary(conn, task_id) if hasattr(kb, "latest_summary") else None
+    blocked = _latest_event_payloads(conn, [task_id], "blocked").get(task_id, {})
+    review = _latest_event_payloads(conn, [task_id], "review_requested").get(task_id, {})
+    detail["latest_summary"] = summary
+    digest = _review_digests(conn, [task_id]).get(task_id) if task.status == "review" else None
+    detail["ask"] = _ask_of(task.status, blocked, review, summary, digest)
+    detail["block_reason"] = (blocked.get("reason") or None) if task.status == "blocked" else None
+    detail["needs_you"] = _needs_you(task.status, getattr(task, "block_kind", None))
+    runs = kb.list_runs(conn, task_id) if hasattr(kb, "list_runs") else []
+    attachments = kb.list_attachments(conn, task_id) if hasattr(kb, "list_attachments") else []
     return {
-        "task": _task_dict(task, _KANBAN_DETAIL_FIELDS),
+        "task": detail,
         "comments": [
             {"id": c.id, "author": c.author, "body": c.body, "created_at": c.created_at}
             for c in kb.list_comments(conn, task_id)
         ],
         "events": [
-            {"id": e.id, "kind": e.kind, "payload": e.payload, "created_at": e.created_at}
+            {"id": e.id, "kind": e.kind, "payload": e.payload, "created_at": e.created_at,
+             "run_id": getattr(e, "run_id", None)}
             for e in kb.list_events(conn, task_id)[-50:]
+        ],
+        "runs": [_run_dict(r) for r in runs],
+        "diagnostics": _kanban_diagnostics(kb, conn, [task_id]).get(task_id, []),
+        "parents": _link_rows(kb, conn, kb.parent_ids(conn, task_id)),
+        "children": _link_rows(kb, conn, kb.child_ids(conn, task_id)),
+        # stored_path stays server-side: the phone renders names, not host paths.
+        "attachments": [
+            {"id": a.id, "filename": a.filename, "content_type": a.content_type,
+             "size": a.size, "uploaded_by": a.uploaded_by, "created_at": a.created_at}
+            for a in attachments
         ],
     }
 
@@ -648,6 +769,83 @@ def kanban_create(kb: Any, conn: Any, payload: dict[str, Any]) -> dict[str, Any]
 def kanban_comment(kb: Any, conn: Any, task_id: str, body: str) -> dict[str, Any]:
     cid = kb.add_comment(conn, task_id, author=KANBAN_ACTOR, body=body)
     return {"task_id": task_id, "comment_id": cid}
+
+
+def kanban_reply(kb: Any, conn: Any, task_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """The owner answers a card that asked for something: a comment in the
+    owner's name, then — if asked — unblock, so the next run reads the answer.
+    The one state transition the phone makes, and only blocked → its resume
+    phase through kanban_db.unblock_task (the same call `hermes kanban
+    unblock` makes). None = unknown task."""
+    text = str(payload.get("body") or "").strip()
+    if not text:
+        raise ValueError("body is required")
+    task = kb.get_task(conn, task_id)
+    if task is None:
+        return None
+    cid = kb.add_comment(conn, task_id, author=_kanban_owner(), body=text)
+    unblocked = False
+    if payload.get("unblock") and task.status in ("blocked", "scheduled"):
+        unblocked = bool(kb.unblock_task(conn, task_id))
+    after = kb.get_task(conn, task_id)
+    return {
+        "task_id": task_id, "comment_id": cid, "unblocked": unblocked,
+        "status": after.status if after else None,
+    }
+
+
+def kanban_approve(kb: Any, conn: Any, task_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """The owner's review verdict, yes: a card awaiting review → done through
+    kanban_db.complete_task (the call `hermes kanban complete` makes; `review` is
+    the status it accepts "for human approval"). The note lands as the closing
+    run's summary and, when given, as a comment in the owner's name. Only a
+    card IN review: a reviewer run in flight is its reviewer's to close."""
+    task = kb.get_task(conn, task_id)
+    if task is None:
+        return None
+    if task.status != "review":
+        raise ValueError(f"only a card awaiting review can be approved (this one is {task.status})")
+    note = str(payload.get("note") or "").strip()
+    if note:
+        kb.add_comment(conn, task_id, author=_kanban_owner(), body=f"APPROVED: {note}")
+    ok = bool(kb.complete_task(conn, task_id, summary=note or "Approved by the owner from Keryx"))
+    if not ok:
+        raise ValueError("could not complete: a parent card reopened, or the card moved on")
+    after = kb.get_task(conn, task_id)
+    return {"task_id": task_id, "completed": True, "status": after.status if after else None}
+
+
+def kanban_request_changes(kb: Any, conn: Any, task_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """The owner's review verdict, no: back to the implementer with a reason.
+    Two review shapes, the same two paths the CLI has:
+    - a reviewer run in flight (running, claimed from review) → kanban_db.request_changes,
+      exactly `hermes kanban request-changes <id> <reason>`;
+    - a card parked in `review` (nobody claimed it) → kanban_db.reopen_review_task plus a
+      "CHANGES REQUESTED: …" comment, exactly `hermes kanban reopen-review <id> --reason`,
+      because request_changes refuses a card with no active review run."""
+    task = kb.get_task(conn, task_id)
+    if task is None:
+        return None
+    reason = str(payload.get("reason") or "").strip()
+    if not reason:
+        raise ValueError("reason is required (what has to change before re-review)")
+    if task.status == "review":
+        redact = getattr(kb, "redact_review_value", None)
+        clean = str(redact(reason)).strip() if redact else reason
+        if not kb.reopen_review_task(conn, task_id):
+            raise ValueError("could not reopen: the card left review")
+        kb.add_comment(conn, task_id, author=_kanban_owner(), body=f"CHANGES REQUESTED: {clean}")
+        routed = None
+    else:
+        ok, detail = kb.request_changes(conn, task_id, reason=reason)
+        if not ok:
+            raise ValueError(f"cannot request changes: {detail or 'not in review'}")
+        routed = detail
+    after = kb.get_task(conn, task_id)
+    return {
+        "task_id": task_id, "status": after.status if after else None,
+        "assignee": after.assignee if after else None, "routed_to": routed,
+    }
 
 
 def kanban_task_settings(kb: Any, conn: Any, task_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -1709,11 +1907,9 @@ def _profile_choices() -> list:
     routing-map edit shows up without a payload change."""
     profiles: list = []
     try:
-        from pathlib import Path
-
         import yaml
 
-        cfg = yaml.safe_load((Path.home() / ".hermes" / "config.yaml").read_text()) or {}
+        cfg = yaml.safe_load(_config_file().read_text()) or {}
         rp = ((cfg.get("platforms") or {}).get("matrix") or {}).get("room_profile_map") or {}
         if isinstance(rp, dict):
             profiles = sorted({str(v) for v in rp.values() if v})
@@ -2025,10 +2221,8 @@ def logs_tail(lines_q: str) -> tuple[int, dict]:
         except Exception:
             continue
     if not text:
-        from pathlib import Path
-
-        for candidate in (Path.home() / ".hermes" / "logs" / "gateway.log",
-                          Path.home() / ".hermes" / "gateway.log"):
+        for candidate in (_hermes_home() / "logs" / "gateway.log",
+                          _hermes_home() / "gateway.log"):
             try:
                 if candidate.is_file():
                     text = "\n".join(candidate.read_text(errors="replace").splitlines()[-lines:])
@@ -2120,9 +2314,7 @@ def brain_select(name: Any) -> tuple[int, dict]:
         return 409, {"error": {"message": "a brain swap was just started — give it a minute"}}
     _BRAIN_SWAP_LAST["ts"] = now
 
-    from pathlib import Path
-
-    log_dir = Path.home() / ".hermes" / "logs"
+    log_dir = _hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log = open(log_dir / "keryx-brain-swap.log", "ab")
     log.write(f"\n--- {name} @ {_time.strftime('%Y-%m-%dT%H:%M:%S')} ---\n".encode())
@@ -2715,7 +2907,7 @@ def update_start() -> tuple[int, dict]:
         return 409, {"error": {"message": "an update was just started — let it finish"}}
     _UPDATE_RUN["ts"] = now
 
-    log_dir = Path.home() / ".hermes" / "logs"
+    log_dir = _hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log = open(log_dir / "keryx-update.log", "ab")
     log.write(
@@ -2942,10 +3134,23 @@ def _shipyard_routes(router: Any, check_auth) -> None:
     router.add_post("/keryx/git/review/push", _make_json_handler(check_auth, gated(_push)))
 
 
-def register_panel_routes(router: Any, check_auth) -> None:
-    """Single registrar for every /keryx/* route — api_server.py calls only
-    this, so future routes ship in this module (copied wholesale by
-    install.py) without touching the api_server patch again."""
+_KANBAN_REVIEW_CALLS = ("unblock_task", "complete_task", "reopen_review_task", "request_changes")
+
+
+def _kanban_review_supported() -> bool:
+    """The owner-verdict routes call these kanban_db functions directly; a Hermes
+    without any of them gets no review routes and no ``kanban.review`` feature."""
+    try:
+        from hermes_cli import kanban_db as kb
+    except Exception:
+        return False
+    return all(callable(getattr(kb, name, None)) for name in _KANBAN_REVIEW_CALLS)
+
+
+def register_panel_routes(router: Any, check_auth) -> list[str]:
+    """Mount every /keryx/* panel route on the plugin's own server and return
+    the feature names actually mounted (for /keryx/health)."""
+    mounted: list[str] = ["capabilities", "reasoning.dial", "commands"]
     router.add_get("/keryx/capabilities", make_capabilities_handler(check_auth))
     router.add_get("/keryx/commands", make_commands_handler(check_auth))
 
@@ -2982,6 +3187,7 @@ def register_panel_routes(router: Any, check_auth) -> None:
     router.add_get("/keryx/pets", _make_json_handler(check_auth, _pets))
     router.add_post("/keryx/pet/select", _make_json_handler(check_auth, _pet_select))
     router.add_get("/keryx/pet/thumb", _make_json_handler(check_auth, _pet_thumb))
+    mounted.append("pets")
 
     def _board(kb, conn, request, body):
         return 200, kanban_board_snapshot(kb, conn)
@@ -3000,6 +3206,24 @@ def register_panel_routes(router: Any, check_auth) -> None:
         if not text:
             raise ValueError("body is required")
         return 200, kanban_comment(kb, conn, request.match_info["task_id"], text)
+
+    def _reply(kb, conn, request, body):
+        out = kanban_reply(kb, conn, request.match_info["task_id"], body)
+        if out is None:
+            return 404, {"error": {"message": "unknown task"}}
+        return 200, out
+
+    def _approve(kb, conn, request, body):
+        out = kanban_approve(kb, conn, request.match_info["task_id"], body)
+        if out is None:
+            return 404, {"error": {"message": "unknown task"}}
+        return 200, out
+
+    def _request_changes(kb, conn, request, body):
+        out = kanban_request_changes(kb, conn, request.match_info["task_id"], body)
+        if out is None:
+            return 404, {"error": {"message": "unknown task"}}
+        return 200, out
 
     def _settings(kb, conn, request, body):
         out = kanban_task_settings(kb, conn, request.match_info["task_id"], body)
@@ -3032,6 +3256,13 @@ def register_panel_routes(router: Any, check_auth) -> None:
     router.add_get("/keryx/kanban/subs", _make_kanban_handler(check_auth, _subs))
     router.add_post("/keryx/kanban/task/{task_id}/subscribe", _make_kanban_handler(check_auth, _subscribe))
     router.add_post("/keryx/kanban/task/{task_id}/unsubscribe", _make_kanban_handler(check_auth, _unsubscribe))
+    mounted.append("kanban")
+    if _kanban_review_supported():
+        router.add_post("/keryx/kanban/task/{task_id}/reply", _make_kanban_handler(check_auth, _reply))
+        router.add_post("/keryx/kanban/task/{task_id}/approve", _make_kanban_handler(check_auth, _approve))
+        router.add_post("/keryx/kanban/task/{task_id}/request-changes",
+                        _make_kanban_handler(check_auth, _request_changes))
+        mounted.append("kanban.review")
 
     def _skill_get(request, body):
         name = request.match_info["name"]
@@ -3084,11 +3315,13 @@ def register_panel_routes(router: Any, check_auth) -> None:
     router.add_delete(
         "/keryx/skill-trash/{entry_id}", _make_json_handler(check_auth, _skill_purge)
     )
+    mounted += ["skills", "skills.trash"]
 
     def _prune(request, body):
         return 200, sessions_prune(body)
 
     router.add_post("/keryx/sessions/prune", _make_json_handler(check_auth, _prune))
+    mounted.append("sessions.prune")
 
 
     # --- Gateway Controls (Keryx 1.21) ------------------------------------
@@ -3147,9 +3380,12 @@ def register_panel_routes(router: Any, check_auth) -> None:
     router.add_post("/keryx/update/check", _make_json_handler(check_auth, _update_check_post))
     router.add_post("/keryx/update/probe", _make_json_handler(check_auth, _update_probe_post))
     router.add_post("/keryx/update", _make_json_handler(check_auth, _update_post))
+    mounted += ["config", "config.raw", "logs", "brains", "update"]
     try:
         _shipyard_routes(router, check_auth)
+        mounted.append("git")
     except ImportError:
         # hermes_cli.web_git is newer than the rest of what the panels need —
         # an older Hermes loses Shipyard, not every panel.
         logger.warning("keryx-stream: this Hermes has no hermes_cli.web_git — Shipyard routes are off")
+    return mounted
