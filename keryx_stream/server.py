@@ -12,7 +12,9 @@ is fully decoupled. Routes:
   GET  /keryx/toolsets?platform=<p>             — toolset view for the platform.
   PUT  /keryx/toolsets/{name}                   — toggle one toolset.
   GET  /keryx/health                            — liveness + version + the
-       feature list, so the app can tell a missing panel from an old plugin.
+       DERIVED feature list (version.features) + config ``hints``, so the app
+       can tell a missing panel from an old plugin and an operator sees which
+       knobs to set.
   /keryx/*                                      — the app's panel routes
        (panels.py): reasoning dial, config, brains, kanban, skills, pets …
   anything else                                 — relayed to the native API
@@ -29,14 +31,20 @@ import logging
 
 from . import toolsets as toolsets_mod
 from .hub import drain_coalesced, hub
+from .probe import probe
 from .scope import make_scope_middleware
-from .version import FEATURES, __version__
+from .version import REQUIRES_HERMES, __version__, features
 
 logger = logging.getLogger("keryx_stream.server")
 
 
-# Served by this module itself; everything else in FEATURES comes from panels.py.
-_CORE_FEATURES = {"stream", "stream.chat_key", "publish", "toolsets"}
+def _panels_key():
+    from aiohttp import web
+
+    return web.AppKey("keryx_panel_features", list)
+
+
+_PANELS_KEY = _panels_key()
 
 
 def _unauthorized(web):
@@ -51,7 +59,13 @@ def build_app(config) -> object:
 
     def check_auth(request: web.Request) -> web.Response | None:
         if not config.token:
-            # No token configured → refuse everything rather than serve open.
+            # A token that appeared after startup (.env edited, secret source
+            # hydrated late) is picked up here; still none → refuse everything
+            # rather than serve open.
+            from .auth import resolve_token
+
+            config.token, config.token_source = resolve_token()
+        if not config.token:
             return _unauthorized(web)
         header = request.headers.get("Authorization", "")
         if not header.startswith("Bearer "):
@@ -62,10 +76,13 @@ def build_app(config) -> object:
         return None
 
     async def handle_health(request):
-        features = [f for f in FEATURES if f in _CORE_FEATURES or request.app.get("keryx_panels")]
-        features += ["proxy"] if config.upstream_url else []
+        feats = await asyncio.to_thread(
+            features, panel_features=request.app[_PANELS_KEY],
+            proxy=bool(config.upstream_url), probe=probe)
+        hints = await asyncio.to_thread(probe.hints)
         return web.json_response({
-            "ok": True, "plugin": "keryx-stream", "version": __version__, "features": features,
+            "ok": True, "plugin": "keryx-stream", "version": __version__,
+            "requires_hermes": REQUIRES_HERMES, "features": feats, "hints": hints,
         })
 
     async def handle_stream(request: web.Request) -> web.StreamResponse:
@@ -178,10 +195,12 @@ def build_app(config) -> object:
             return web.json_response(
                 {"error": {"message": "text must be a string or null"}}, status=400
             )
+        probe.note_event(event, text)
         hub.publish_threadsafe(platform, chat_id, event, text)
         return web.json_response({"ok": True})
 
     app = web.Application(middlewares=[make_scope_middleware()])
+    app[_PANELS_KEY] = []
     app.router.add_get("/keryx/health", handle_health)
     app.router.add_get("/keryx/stream", handle_stream)
     app.router.add_post("/keryx/publish", handle_publish)
@@ -192,8 +211,7 @@ def build_app(config) -> object:
         # them if a Hermes release moves something they import.
         try:
             from .panels import register_panel_routes
-            register_panel_routes(app.router, check_auth)
-            app["keryx_panels"] = True
+            app[_PANELS_KEY] = list(register_panel_routes(app.router, check_auth) or [])
         except Exception:
             logger.warning("keryx-stream: panel routes unavailable on this Hermes — "
                            "streaming and toolsets still served", exc_info=True)
