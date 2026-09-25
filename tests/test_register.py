@@ -313,3 +313,19 @@ def test_manifest_matches_the_code():
     assert sorted(declared) == sorted(_ALL_HOOKS)
     assert f"version: {__version__}\n" in text
     assert f'requires_hermes: "{REQUIRES_HERMES}"' in text
+
+
+def test_interim_already_in_the_open_text_run_is_suppressed():
+    """Commentary that went out as deltas is not re-sent as interim, even when
+    Hermes flags it already_streamed=False; new commentary still goes out."""
+    published = []
+    cbs = _cbs(lambda *a: published.append(a))
+    cbs["on_stream_start"](session_id="s1", surface="cli", turn_id="t")
+    cbs["on_stream_delta"](session_id="s1", surface="cli", delta="Plan: read the", turn_id="t", iteration=1)
+    cbs["on_stream_delta"](session_id="s1", surface="cli", delta=" file.\n\n", turn_id="t", iteration=1)
+    cbs["on_interim_message"](session_id="s1", surface="cli", text="Plan: read the file.",
+                              already_streamed=False, turn_id="t")
+    cbs["on_interim_message"](session_id="s1", surface="cli", text="Something else.",
+                              already_streamed=False, turn_id="t")
+    interims = [t for _, _, e, t in published if e == "interim"]
+    assert interims == ["Something else."]

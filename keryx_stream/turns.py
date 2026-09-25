@@ -46,6 +46,11 @@ from typing import Any
 logger = logging.getLogger("keryx_stream.turns")
 
 _TURNS_MAX = 256
+
+
+def _squash(text: str) -> str:
+    return " ".join(str(text or "").split())
+
 _CHILDREN_MAX = 256
 
 
@@ -165,8 +170,16 @@ class TurnTracker:
     def interim(self, sid: str, turn_id: str, text: str) -> None:
         with self._cond:
             turn = self._turn(sid, turn_id)
-            if not turn.closed:
-                self._emit(turn, "interim", text)
+            if turn.closed:
+                return
+            # Hermes can report ``already_streamed=False`` for commentary whose
+            # text did go out as deltas of the open run (seen live on 0.21.5 with a
+            # text + tool-call message). The subscriber already has it; re-sending
+            # it as ``interim`` would show it twice.
+            streamed = _squash("".join(turn.iter_text)) if turn.text_iter is not None else ""
+            if streamed and streamed.startswith(_squash(text)):
+                return
+            self._emit(turn, "interim", text)
 
     def stream_end(self, sid: str, turn_id: str) -> None:
         with self._cond:
