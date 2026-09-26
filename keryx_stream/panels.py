@@ -848,6 +848,80 @@ def kanban_request_changes(kb: Any, conn: Any, task_id: str, payload: dict[str, 
     }
 
 
+# The owner's hands on a card (Keryx 2.14): the moves `hermes kanban` has that
+# are not an answer to an ask. Each verb is the one kanban_db call its CLI verb
+# makes; a note, when given, lands first as a "PREFIX: note" comment in the
+# owner's name, the way the CLI's --reason does.
+_KANBAN_ACTIONS: dict[str, str] = {
+    "unblock": "UNBLOCK",      # blocked/scheduled → its resume phase
+    "promote": "PROMOTE",      # triage → todo/ready; todo/blocked → ready (refused while a parent is open)
+    "reclaim": "RECLAIM",      # running → ready: release a hung or wrong run
+    "reassign": "REASSIGN",    # hand to another profile (reclaims first if running)
+    "block": "BLOCKED",        # park it as needing you
+    "complete": "DONE",        # mark done by hand
+    "archive": "ARCHIVE",      # off the board
+}
+
+
+def kanban_action(kb: Any, conn: Any, task_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """One owner move on a card. ``action`` is a key of _KANBAN_ACTIONS; ``note``
+    is optional (required for ``block``, which needs a reason the worker reads);
+    ``assignee`` is required for ``reassign``. A refused move is a ValueError
+    naming why, so the phone can say it. None = unknown task."""
+    action = str(payload.get("action") or "").strip().lower()
+    if action not in _KANBAN_ACTIONS:
+        raise ValueError(f"unknown action {action!r} (one of: {', '.join(_KANBAN_ACTIONS)})")
+    task = kb.get_task(conn, task_id)
+    if task is None:
+        return None
+    note = str(payload.get("note") or "").strip()
+    if action == "block" and not note:
+        raise ValueError("a reason is required to block (the next run reads it)")
+    assignee = str(payload.get("assignee") or "").strip()
+    if action == "reassign" and not assignee:
+        raise ValueError("assignee is required to reassign")
+    before = task.status
+    if note:
+        kb.add_comment(conn, task_id, author=_kanban_owner(), body=f"{_KANBAN_ACTIONS[action]}: {note}")
+
+    if action == "unblock":
+        if before not in ("blocked", "scheduled"):
+            raise ValueError(f"only a blocked or scheduled card can be unblocked (this one is {before})")
+        ok, why = bool(kb.unblock_task(conn, task_id)), "the card moved on"
+    elif action == "promote" and before == "triage":
+        # Out of triage the way `hermes kanban specify` lands it, minus the LLM rewrite: the
+        # owner already wrote the brief. todo, then ready at once when no parent is open.
+        ok = bool(kb.specify_triage_task(conn, task_id, author=_kanban_owner()))
+        why = "the card left triage"
+    elif action == "promote":
+        ok, why = kb.promote_task(conn, task_id, actor=_kanban_owner(), reason=note or None)
+    elif action == "reclaim":
+        ok = bool(kb.reclaim_task(conn, task_id, reason=note or "reclaimed from Keryx"))
+        why = f"nothing to reclaim (the card is {before}, not running)"
+    elif action == "reassign":
+        ok = bool(kb.reassign_task(conn, task_id, assignee, reclaim_first=before == "running",
+                                   reason=note or None))
+        why = f"could not hand it to {assignee}"
+    elif action == "block":
+        ok = bool(kb.block_task(conn, task_id, reason=note))
+        why = f"a {before} card cannot be blocked"
+    elif action == "complete":
+        if before in ("done", "archived"):
+            raise ValueError(f"the card is already {before}")
+        ok = bool(kb.complete_task(conn, task_id, summary=note or "Marked done by the owner from Keryx"))
+        why = "could not complete: a parent card is still open, or the card moved on"
+    else:  # archive
+        ok, why = bool(kb.archive_task(conn, task_id)), "the card is already archived"
+    if not ok:
+        raise ValueError(why or f"cannot {action} this card")
+    after = kb.get_task(conn, task_id)
+    return {
+        "task_id": task_id, "action": action, "from": before,
+        "status": after.status if after else None,
+        "assignee": after.assignee if after else None,
+    }
+
+
 def kanban_task_settings(kb: Any, conn: Any, task_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     """Per-task model + thinking depth (the v0.20 kanban override fields), the
     phone's side of what the dashboard's PATCH does. Key-present semantics: a key
@@ -3135,6 +3209,8 @@ def _shipyard_routes(router: Any, check_auth) -> None:
 
 
 _KANBAN_REVIEW_CALLS = ("unblock_task", "complete_task", "reopen_review_task", "request_changes")
+_KANBAN_ACTION_CALLS = ("unblock_task", "promote_task", "specify_triage_task", "reclaim_task", "reassign_task",
+                        "block_task", "complete_task", "archive_task")
 
 
 def _kanban_review_supported() -> bool:
@@ -3145,6 +3221,15 @@ def _kanban_review_supported() -> bool:
     except Exception:
         return False
     return all(callable(getattr(kb, name, None)) for name in _KANBAN_REVIEW_CALLS)
+
+
+def _kanban_actions_supported() -> bool:
+    """Same rule for the owner's card moves and the ``kanban.actions`` feature."""
+    try:
+        from hermes_cli import kanban_db as kb
+    except Exception:
+        return False
+    return all(callable(getattr(kb, name, None)) for name in _KANBAN_ACTION_CALLS)
 
 
 def register_panel_routes(router: Any, check_auth) -> list[str]:
@@ -3225,6 +3310,12 @@ def register_panel_routes(router: Any, check_auth) -> list[str]:
             return 404, {"error": {"message": "unknown task"}}
         return 200, out
 
+    def _action(kb, conn, request, body):
+        out = kanban_action(kb, conn, request.match_info["task_id"], body)
+        if out is None:
+            return 404, {"error": {"message": "unknown task"}}
+        return 200, out
+
     def _settings(kb, conn, request, body):
         out = kanban_task_settings(kb, conn, request.match_info["task_id"], body)
         if out is None:
@@ -3263,6 +3354,9 @@ def register_panel_routes(router: Any, check_auth) -> list[str]:
         router.add_post("/keryx/kanban/task/{task_id}/request-changes",
                         _make_kanban_handler(check_auth, _request_changes))
         mounted.append("kanban.review")
+    if _kanban_actions_supported():
+        router.add_post("/keryx/kanban/task/{task_id}/action", _make_kanban_handler(check_auth, _action))
+        mounted.append("kanban.actions")
 
     def _skill_get(request, body):
         name = request.match_info["name"]
