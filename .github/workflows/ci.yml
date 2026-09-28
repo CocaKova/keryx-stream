@@ -23,8 +23,8 @@ jobs:
 
   against-hermes-main:
     # The whole suite inside a fresh hermes-agent main: panel routes against
-    # Hermes' real config defaults / kanban / skills code, Hermes' own retired-
-    # import scanner over this package, and the hook names we register.
+    # Hermes' real config defaults / kanban / skills code,
+    # every Hermes import this package makes (static, see tests/test_hermes_compat.py), and the hook names we register.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +34,9 @@ jobs:
           path: hermes-agent
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # hermes-agent declares its dependencies for Python >= 3.14 only; on an older
+          # interpreter `pip install -e ./hermes-agent` installs none and the panel tests skip.
+          python-version: "3.14"
       - name: Install hermes-agent and the plugin
         run: |
           pip install -e ./hermes-agent
