@@ -123,6 +123,9 @@ class Probe:
         add("status", "status" in fed)
         add("subagents", "tool.sub" in fed)
         add("thinking", "middleware:llm_request" in reg)
+        # The agent is taught the ⟦…⟧ markers (markers.py) — tells the app whether a
+        # session without citations or tiles means "none this turn" or "never taught".
+        add("prompt.markers", any(name.startswith("prompt_section:") for name in reg))
         return out
 
     def hints(self, cfg: dict | None = None) -> list[dict[str, Any]]:

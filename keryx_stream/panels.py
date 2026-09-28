@@ -695,6 +695,167 @@ def _run_dict(r: Any) -> dict[str, Any]:
     }
 
 
+# --- run → worker session ------------------------------------------------------
+# Every dispatcher-spawned worker is its own Hermes session (source='kanban'),
+# titled after the card (agent/title_generator.py ``_kanban_task_title``), but
+# task_runs keeps no session id. The link is recovered by time + title: the
+# worker's session starts a few seconds after its run is claimed, inside the
+# run's window. Nothing here may fail the detail route — every miss is None.
+
+_RUN_SESSION_SLACK_S = 5.0
+# The worker log holds one ``Session: <id>`` line per run that exited cleanly.
+_WORKER_LOG_SESSION = re.compile(r"^Session:\s+(\S+)\s*$", re.MULTILINE)
+_WORKER_LOG_MAX_BYTES = 8 * 1024 * 1024  # a log this big is not worth a detail read
+
+
+def _worker_session_title(title: str) -> str:
+    """The session title a worker for this card gets: whitespace-collapsed and
+    capped exactly as ``_kanban_task_title`` does (room kept for a `` #N`` suffix)."""
+    title = " ".join((title or "").split())
+    try:
+        from hermes_state import SessionDB
+
+        cap = int(SessionDB.MAX_TITLE_LENGTH) - 4
+    except Exception:
+        cap = 96
+    if len(title) > cap:
+        title = title[: cap - 1].rstrip() + "…"
+    return title
+
+
+def _profile_state_db(profile: Any) -> Path | None:
+    """state.db of the profile a run's worker ran under — workers write their
+    session to THEIR profile's home, not the gateway's. None = unresolvable."""
+    name = str(profile or "").strip() or "default"
+    try:
+        from hermes_cli.profiles import get_profile_dir
+
+        return Path(get_profile_dir(name)) / "state.db"
+    except Exception:
+        # Older Hermes without profiles.get_profile_dir: only the home we run in.
+        return _hermes_home() / "state.db" if name == "default" else None
+
+
+# The dispatcher's worker prompt (kanban_db_dispatch ``work kanban task <id>``).
+# Cards may share a title; a session whose prompt names ANOTHER task is not ours.
+_WORKER_PROMPT_TASK = re.compile(r"^\s*work kanban task (\S+)")
+
+
+def _kanban_sessions(db_path: Path, task_id: str, titles: list[str], prefixes: list[str],
+                     lo: float, hi: float) -> list[tuple[str, float]]:
+    """(id, started_at) of kanban-sourced sessions in [lo, hi] carrying one of
+    the card's titles. A plain read-only connection rather than SessionDB():
+    constructing SessionDB runs its guard/repair/migration path and it has no
+    public "by source in a time window" read — this is one indexed SELECT that
+    can never write to another profile's database."""
+    import sqlite3
+
+    if not db_path.is_file():
+        return []
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=1.0)
+    try:
+        clauses = ["s.title = ?"] * len(titles) + ["substr(s.title, 1, ?) = ?"] * len(prefixes)
+        params: list[Any] = list(titles)
+        for p in prefixes:
+            params += [len(p), p]
+        rows = conn.execute(
+            "SELECT s.id, s.started_at, (SELECT substr(m.content, 1, 200) FROM messages m "
+            "WHERE m.session_id = s.id AND m.role = 'user' ORDER BY m.id LIMIT 1) "
+            "FROM sessions s WHERE s.source = 'kanban' "
+            f"AND s.started_at BETWEEN ? AND ? AND ({' OR '.join(clauses)})",
+            (lo, hi, *params),
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for sid, started, prompt in rows:
+        if not sid or started is None:
+            continue
+        named = _WORKER_PROMPT_TASK.match(prompt) if isinstance(prompt, str) else None
+        if named and named.group(1) != task_id:
+            continue
+        out.append((str(sid), float(started)))
+    return out
+
+
+def _pair_run_sessions(windows: list[tuple[float, float]],
+                       sessions: list[tuple[str, float]]) -> list[str | None]:
+    """Give each run window the session that started closest to its start, one
+    session per run: back-to-back runs (a review hand-off opens a new run in the
+    same second) can both contain one worker's start, and it belongs to one."""
+    pairs = sorted(
+        (abs(started - start), i, j)
+        for i, (start, end) in enumerate(windows)
+        for j, (_sid, started) in enumerate(sessions)
+        if start - _RUN_SESSION_SLACK_S <= started <= end + _RUN_SESSION_SLACK_S
+    )
+    out: list[str | None] = [None] * len(windows)
+    taken: set[int] = set()
+    for _dist, i, j in pairs:
+        if out[i] is None and j not in taken:
+            out[i] = sessions[j][0]
+            taken.add(j)
+    return out
+
+
+def _log_session_ids(kb: Any, task_id: str) -> list[str]:
+    """``Session:`` ids from the task's worker log, oldest first ([] on any miss)."""
+    try:
+        path = Path(kb.worker_log_path(task_id))
+        if not path.is_file() or path.stat().st_size > _WORKER_LOG_MAX_BYTES:
+            return []
+        return _WORKER_LOG_SESSION.findall(path.read_text(encoding="utf-8-sig", errors="replace"))
+    except Exception:
+        logger.debug("keryx kanban worker log unreadable for %s", task_id, exc_info=True)
+        return []
+
+
+def _run_session_ids(kb: Any, task: Any, runs: list[Any]) -> list[str | None]:
+    """The worker session of each run, aligned with ``runs``; None where unknown."""
+    out: list[str | None] = [None] * len(runs)
+    if not runs:
+        return out
+    try:
+        import time
+
+        now = time.time()
+        title = _worker_session_title(getattr(task, "title", "") or "")
+        fallback = f"Kanban task {task.id}"
+        titles = [t for t in (title, fallback) if t]
+        prefixes = [f"{t} #" for t in titles]
+        by_profile: dict[str, list[int]] = {}
+        for i, r in enumerate(runs):
+            if getattr(r, "started_at", None) is not None:
+                by_profile.setdefault(str(getattr(r, "profile", None) or "").strip() or "default", []).append(i)
+        for profile, idx in by_profile.items():
+            db_path = _profile_state_db(profile)
+            if db_path is None:
+                continue
+            windows = [(float(runs[i].started_at),
+                        float(runs[i].ended_at if runs[i].ended_at is not None else now)) for i in idx]
+            try:
+                sessions = _kanban_sessions(
+                    db_path, task.id, titles, prefixes,
+                    min(w[0] for w in windows) - _RUN_SESSION_SLACK_S,
+                    max(w[1] for w in windows) + _RUN_SESSION_SLACK_S,
+                )
+            except Exception:
+                logger.debug("keryx kanban sessions unreadable in %s", db_path, exc_info=True)
+                continue
+            for i, sid in zip(idx, _pair_run_sessions(windows, sessions), strict=True):
+                out[i] = sid
+        if None in out:
+            # Pairing log lines by position is only sound when every run left one.
+            logged = _log_session_ids(kb, task.id)
+            if logged and len(logged) == len(runs):
+                claimed = {s for s in out if s}
+                out = [s or (logged[i] if logged[i] not in claimed else None) for i, s in enumerate(out)]
+    except Exception:
+        logger.debug("keryx kanban run sessions unavailable for %s", getattr(task, "id", "?"), exc_info=True)
+        return [None] * len(runs)
+    return out
+
+
 def _link_rows(kb: Any, conn: Any, ids: list[str]) -> list[dict[str, Any]]:
     out = []
     for tid in ids:
@@ -729,7 +890,10 @@ def kanban_task_detail(kb: Any, conn: Any, task_id: str) -> dict[str, Any] | Non
              "run_id": getattr(e, "run_id", None)}
             for e in kb.list_events(conn, task_id)[-50:]
         ],
-        "runs": [_run_dict(r) for r in runs],
+        "runs": [
+            {**_run_dict(r), "session_id": sid}
+            for r, sid in zip(runs, _run_session_ids(kb, task, runs), strict=True)
+        ],
         "diagnostics": _kanban_diagnostics(kb, conn, [task_id]).get(task_id, []),
         "parents": _link_rows(kb, conn, kb.parent_ids(conn, task_id)),
         "children": _link_rows(kb, conn, kb.child_ids(conn, task_id)),
@@ -3357,6 +3521,8 @@ def register_panel_routes(router: Any, check_auth) -> list[str]:
     if _kanban_actions_supported():
         router.add_post("/keryx/kanban/task/{task_id}/action", _make_kanban_handler(check_auth, _action))
         mounted.append("kanban.actions")
+    # Each run in the task detail names its worker session (``runs[].session_id``).
+    mounted.append("kanban.run_sessions")
 
     def _skill_get(request, body):
         name = request.match_info["name"]
