@@ -111,3 +111,13 @@ def test_events_cursor_is_incremental(board):
     delta = ks.kanban_events_since(board, first["cursor"])
     assert [e["kind"] for e in delta["events"]] == ["commented"]
     assert delta["cursor"] > first["cursor"]
+
+
+def test_detail_runs_carry_a_session_id_key(board, monkeypatch):
+    """Every run names its worker session, or None — a claimed run whose worker
+    never started a session (none in this isolated home) is None, not missing."""
+    monkeypatch.setattr(ks, "_profile_state_db", lambda profile: None)
+    tid = ks.kanban_create(kb, board, {"title": "linked", "assignee": "milo"})["task_id"]
+    kb.claim_task(board, tid)
+    runs = ks.kanban_task_detail(kb, board, tid)["runs"]
+    assert runs and all("session_id" in r and r["session_id"] is None for r in runs)

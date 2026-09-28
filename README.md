@@ -66,7 +66,7 @@ access: a request must pass the plugin's bearer check before it is forwarded
 ### `/keryx/health`: features and hints
 
 ```json
-{"ok": true, "plugin": "keryx-stream", "version": "0.4.0", "requires_hermes": ">=0.21.3",
+{"ok": true, "plugin": "keryx-stream", "version": "0.5.0", "requires_hermes": ">=0.21.3",
  "features": ["stream", "stream.chat_key", "publish", "toolsets", "reasoning", "interim",
               "tools", "tools.diff", "segment", "stop.turn", "usage", "thinking", "..."],
  "hints": [{"key": "compression.progress_notices", "value": true, "why": "..."}]}
@@ -91,6 +91,8 @@ that" from "that is broken".
 | `stop.turn` | `post_llm_call` registered (one `stop` per turn, not per API call) |
 | `usage` / `status` / `subagents` | a frame of that kind has been published |
 | `thinking` | the `llm_request` middleware registered |
+| `prompt.markers` | the marker prompt sections registered (see [Teaching your agent Keryx's formatting](#teaching-your-agent-keryxs-formatting)) |
+| `kanban.run_sessions` | always with the kanban routes: each run in a task detail carries `session_id` (its worker's Hermes session, or `null`) |
 | panel names, `proxy` | the panel routes mounted; the relay is on |
 
 `hints` lists the Hermes config knobs that are still off, each with a reason.
@@ -221,6 +223,9 @@ keryx_stream:
   stop_hold_ms: 3000           # longest a turn's stop waits for lagging deltas
   stop_quiet_ms: 300           # a wire this quiet after post_llm_call counts as done
   idle_stop_s: 45              # watchdog stop for a turn post_llm_call never ended
+  markers:                     # teach the agent Keryx's ⟦…⟧ markers (see below); `markers: false` = off
+    enabled: true
+    platforms: [api_server, matrix]
 ```
 
 For full parity also set these Hermes knobs. `/keryx/health` lists whichever
@@ -257,6 +262,59 @@ process's own Hermes home, the active profile's secret scope, and the `.env` of
 the routed profile. Nothing found is written back into the environment. A
 forwarder that started with no token retries the lookup (at most every 30 s)
 instead of posting unauthenticated for the life of the worker.
+
+## Teaching your agent Keryx's formatting
+
+Keryx renders a few markers that only the model can decide to write: inline
+source citations, decision tiles, phone-action tiles. Nothing detects them from
+plain prose, so the agent has to be told they exist. On a Hermes with plugin
+prompt sections (`ctx.register_system_prompt_section`), keryx-stream registers
+two sections, each well under Hermes' 4000-character cap:
+
+- `keryx.markers.core`: the client renders GitHub-flavored markdown (tables,
+  fenced code, task lists; mermaid `graph`/`flowchart` diagrams are drawn;
+  `$…$` math is shown as Unicode, not typeset), `MEDIA:/absolute/path` lines
+  for files, source citations (`⟦c1⟧` inline plus `⟦cite 1|kind|label|detail⟧`
+  definitions, kind one of memory, file, web, session; never an invented source),
+  and decision tiles (`⟦keryx:ask|A|B⟧` as the message's last line).
+- `keryx.markers.hands`: phone actions (`⟦keryx:do|kind|args…⟧`: url, dial,
+  sms, email, calendar, alarm, timer, navigate, search, play, open, copy,
+  torch, share; they act only on the user's tap), what `⟦keryx:voice⟧` on a
+  user message means (spoken in a call; answer for the ear), and the
+  `⟦keryx:sense|…⟧` context tail.
+
+The exact text is in `keryx_stream/markers.py`. The core section says
+explicitly that this client renders markdown, because Hermes' own hint for the
+`api_server` platform asks for plain text.
+
+**Where it applies.** Hermes renders each section once when a session starts
+and freezes it into that session's system prompt. Turns reuse the frozen
+bytes, so prompt caching is unaffected, and a config change only reaches new
+sessions. The section is included only when the session's `platform` is in
+`keryx_stream.markers.platforms` (default `api_server` and `matrix`). The
+platform is the only thing the section sees that says where a chat is read,
+and it can't tell Keryx from other clients:
+
+- `api_server` also serves any other OpenAI-compatible client. Those clients
+  will get the protocol too, and anything that doesn't know the markers shows
+  them as literal text.
+- Keryx's direct gateway connection creates `tui` sessions, the same platform
+  as Hermes' terminal UI. It is not in the default set. Add `tui` if you use
+  the direct connection and accept that terminal sessions are taught the
+  markers as well.
+
+```yaml
+keryx_stream:
+  markers:
+    enabled: true                     # false (or `markers: false`) turns it off
+    platforms: [api_server, matrix, tui]
+```
+
+On a Hermes without prompt sections nothing is registered, the plugin still
+loads, and `prompt.markers` is not listed in `/keryx/health`. The app renders
+the markers whenever they appear, however the agent learned them. If you
+already inject your own version of this protocol some other way, set
+`enabled: false` so the model is not taught it twice.
 
 ## How it works
 
