@@ -199,9 +199,8 @@ def _reasoning_capabilities(
     room_profiles: dict[str, str] = {}
     local_slugs: set = set()
     try:
-        import yaml
-
-        cfg = yaml.safe_load(_config_file().read_text()) or {}
+        safe_load, _ = _yaml()
+        cfg = safe_load(_config_file().read_text()) or {}
         model_cfg = cfg.get("model") or {}
         cfg_provider = str(model_cfg.get("provider", "") or "").strip().lower()
         # ``model.default`` is the key current configs use; ``model``/``name`` are legacy spellings.
@@ -493,6 +492,21 @@ _KANBAN_SELF_CLEARING_BLOCKS = ("dependency", "transient")
 # A crash/failure streak is history once a later run ended some other way.
 _KANBAN_FAILURE_DIAGS = ("repeated_crashes", "repeated_failures")
 _KANBAN_FAILED_OUTCOMES = ("crashed", "timed_out", "spawn_failed", "gave_up")
+
+
+def _yaml():
+    """``(safe_load, YAMLError)`` with Hermes' own YAML policy: ``hermes_yaml`` (ruamel, YAML 1.1,
+    duplicate keys rejected) on current Hermes, which no longer ships PyYAML; PyYAML on releases
+    from before ``hermes_yaml`` existed. Reading config the way the gateway reads it means the raw
+    editor refuses exactly what the gateway would refuse."""
+    try:
+        import hermes_yaml
+
+        return hermes_yaml.safe_load, hermes_yaml.YAMLError
+    except ImportError:
+        import yaml
+
+        return yaml.safe_load, yaml.YAMLError
 
 
 def _moved(new_module: str, old_module: str, name: str):
@@ -2145,9 +2159,8 @@ def _profile_choices() -> list:
     routing-map edit shows up without a payload change."""
     profiles: list = []
     try:
-        import yaml
-
-        cfg = yaml.safe_load(_config_file().read_text()) or {}
+        safe_load, _ = _yaml()
+        cfg = safe_load(_config_file().read_text()) or {}
         rp = ((cfg.get("platforms") or {}).get("matrix") or {}).get("room_profile_map") or {}
         if isinstance(rp, dict):
             profiles = sorted({str(v) for v in rp.values() if v})
@@ -2309,7 +2322,7 @@ def config_raw_put(body: dict[str, Any]) -> tuple[int, dict]:
     """`PUT /keryx/config/raw` — validate, back up, write, verify, roll back."""
     import os
 
-    import yaml
+    safe_load, YAMLError = _yaml()
 
     content = body.get("content")
     if not isinstance(content, str) or not content.strip():
@@ -2333,9 +2346,9 @@ def config_raw_put(body: dict[str, Any]) -> tuple[int, dict]:
         }
 
     try:
-        parsed = yaml.safe_load(content)
-    except yaml.YAMLError as e:
-        # PyYAML's message carries line/column — the app shows it verbatim.
+        parsed = safe_load(content)
+    except YAMLError as e:
+        # the parser's message carries line/column — the app shows it verbatim.
         return 400, {"error": {"message": f"YAML error: {e}"}}
     if not isinstance(parsed, dict):
         return 400, {
@@ -2344,8 +2357,8 @@ def config_raw_put(body: dict[str, Any]) -> tuple[int, dict]:
 
     if not body.get("force"):
         try:
-            before = yaml.safe_load(current) if current.strip() else None
-        except yaml.YAMLError:
+            before = safe_load(current) if current.strip() else None
+        except YAMLError:
             before = None
         if isinstance(before, dict) and before:
             kept = set(parsed) & set(before)
@@ -2379,7 +2392,7 @@ def config_raw_put(body: dict[str, Any]) -> tuple[int, dict]:
         return 500, {"error": {"message": f"could not write config: {e}"}}
 
     # Last gate: Hermes' own loader has to accept the file. It knows things
-    # yaml.safe_load doesn't (schema coercion, required shapes), so this is
+    # safe_load doesn't (schema coercion, required shapes), so this is
     # where a syntactically fine but semantically broken config is caught —
     # while the backup is still one os.replace away.
     try:

@@ -27,7 +27,9 @@ def board(tmp_path, monkeypatch):
     """A throwaway board db, isolated from ~/.hermes/kanban.db."""
     db_path = tmp_path / "kanban.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
-    conn = kb.connect()
+    # connect() lives in kanban_db_connect on current Hermes (the kanban_db re-export went with the
+    # compat layer, hermes-agent#126164); take it the way the plugin does.
+    conn = ks._moved("hermes_cli.kanban_db_connect", "hermes_cli.kanban_db", "connect")()
     yield conn
     conn.close()
 
