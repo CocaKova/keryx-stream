@@ -50,6 +50,7 @@ from .frames import (
     tool_start_frame,
 )
 from .hub import hub
+from .markers import DEFAULT_PLATFORMS, normalize_platforms, register_sections
 from .probe import config_hints, probe
 from .routing import SessionRoutes
 from .turns import TurnTracker
@@ -79,6 +80,10 @@ class PluginConfig:
     stop_hold_ms: int = 3000   # longest a stop waits for lagging deltas
     stop_quiet_ms: int = 300   # a wire this quiet after post_llm_call is done
     idle_stop_s: float = 45.0  # watchdog for turns post_llm_call never ends
+    # Teach the agent Keryx's ⟦…⟧ markers via prompt sections (markers.py), only
+    # for sessions on these platforms.
+    markers: bool = True
+    markers_platforms: frozenset = field(default_factory=lambda: frozenset(DEFAULT_PLATFORMS))
 
 
 def load_config() -> PluginConfig:
@@ -91,6 +96,10 @@ def load_config() -> PluginConfig:
     except Exception:
         logger.debug("keryx-stream: could not load config.yaml block", exc_info=True)
     toolsets = cfg.get("toolsets", {}) or {}
+    # ``markers: false`` is the short off switch; the block form carries platforms.
+    markers = cfg.get("markers")
+    if not isinstance(markers, dict):
+        markers = {} if markers is None else {"enabled": markers}
     from .auth import resolve_token
 
     token, source = resolve_token()
@@ -110,6 +119,8 @@ def load_config() -> PluginConfig:
         stop_hold_ms=int(cfg.get("stop_hold_ms", 3000)),
         stop_quiet_ms=int(cfg.get("stop_quiet_ms", 300)),
         idle_stop_s=float(cfg.get("idle_stop_s", 45.0)),
+        markers=str(markers.get("enabled", True)).strip().lower() not in {"false", "off", "no", "0"},
+        markers_platforms=normalize_platforms(markers.get("platforms")),
     )
 
 
@@ -512,6 +523,12 @@ def register(ctx) -> None:
                 probe.registered("middleware:llm_request")
             except Exception:
                 logger.warning("keryx-stream: could not register llm_request middleware", exc_info=True)
+
+    # Every process that builds an agent renders its own prompt, so forward-mode
+    # children register too; their platforms (cron, kanban) are simply out of scope.
+    if config.markers:
+        for section_id in register_sections(ctx, config.markers_platforms):
+            probe.registered(f"prompt_section:{section_id}")
 
     _log_hints(forwarding=loop is None)
 

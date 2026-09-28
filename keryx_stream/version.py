@@ -10,7 +10,7 @@ turn the first into the second.
 """
 from __future__ import annotations
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 # Oldest Hermes whose plugin surface this release relies on: the streaming
 # observer hooks with ``turn_id``/``iteration`` in their payloads
