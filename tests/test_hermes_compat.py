@@ -15,7 +15,7 @@ import pytest
 
 HERMES_ROOT = Path(os.environ.get("HERMES_AGENT_ROOT") or Path.home() / ".hermes" / "hermes-agent")
 PACKAGE = Path(__file__).resolve().parent.parent / "keryx_stream"
-HERMES_TOP = {"agent", "gateway", "hermes_cli", "hermes_constants", "hermes_state", "model_tools",
+HERMES_TOP = {"agent", "gateway", "hermes_cli", "hermes_constants", "hermes_state", "hermes_yaml", "model_tools",
               "run_agent", "toolsets", "tools", "tui_gateway"}
 
 if not (HERMES_ROOT / "hermes_cli").is_dir():

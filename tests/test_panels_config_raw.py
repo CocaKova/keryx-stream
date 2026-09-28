@@ -15,7 +15,6 @@ HERMES_ROOT = Path(os.environ.get("HERMES_AGENT_ROOT") or Path.home() / ".hermes
 if str(HERMES_ROOT) not in sys.path:
     sys.path.insert(0, str(HERMES_ROOT))
 
-pytest.importorskip("yaml")
 hermes_config = pytest.importorskip("hermes_cli.config")
 
 from keryx_stream import panels as ks  # noqa: E402
