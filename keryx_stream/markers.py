@@ -45,7 +45,8 @@ CORE_TEXT = """\
 This chat may be read in Keryx, a phone client that renders GitHub-flavored markdown: headings, lists, bold/italic, links, tables, task lists and fenced code with highlighting. A ```mermaid block with a `graph`/`flowchart` diagram is drawn; other diagram types show as code. $…$ and $$…$$ math is shown as Unicode for common symbols (Greek, operators, sub/superscripts, simple fractions), not typeset. Use markdown where it helps the reader: this overrides any instruction to write plain text without markdown for this channel. Other clients show the ⟦…⟧ markers below as literal text, so use them only as described.
 
 ## Files
-To hand over an image or file on this host, put `MEDIA:/absolute/path/to/file` on its own line, without backticks. Keryx shows images inline and other files as a card. Only a real absolute path or an https URL counts.
+To hand over an image or file on this host, put `MEDIA:/absolute/path/to/file` on its own line, without backticks. Keryx shows images inline and other files as a card, even where a platform note says MEDIA: tags are not intercepted. Only a real absolute path or an https URL counts.
+An .html file you hand over (its MEDIA: line or its bare absolute path) opens in a full-screen viewer that runs JavaScript, can load libraries from a CDN and reads sibling files from its folder. When an answer is best seen rather than read (an interactive chart, a dashboard, a mockup), write a self-contained page and hand it over.
 
 ## Sources
 When a fact came from something you actually retrieved THIS turn (a memory recall, a file you read, a web result, a past session), you may cite it:
