@@ -3654,6 +3654,11 @@ def register_panel_routes(router: Any, check_auth) -> list[str]:
     router.add_post("/keryx/update/probe", _make_json_handler(check_auth, _update_probe_post))
     router.add_post("/keryx/update", _make_json_handler(check_auth, _update_post))
     mounted += ["config", "config.raw", "logs", "brains", "update"]
+    # Starter suggestions for an empty chat (Keryx 2.17.3), from the profile's own history.
+    from .suggestions import suggestions_route
+
+    router.add_get("/keryx/suggestions", _make_json_handler(check_auth, suggestions_route))
+    mounted.append("suggestions")
     try:
         _shipyard_routes(router, check_auth)
         mounted.append("git")
