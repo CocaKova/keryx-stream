@@ -5,6 +5,8 @@ import re
 import keryx_stream
 from keryx_stream import PluginConfig, load_config, register
 from keryx_stream.markers import (
+    BLOCKS_ID,
+    BLOCKS_TEXT,
     CORE_ID,
     CORE_TEXT,
     HANDS_ID,
@@ -34,14 +36,16 @@ class _SectionCtx:
 
 
 def test_sections_fit_hermes_budgets():
-    assert len(CORE_TEXT) <= SECTION_MAX_CHARS and len(HANDS_TEXT) <= SECTION_MAX_CHARS
-    assert len(CORE_TEXT) + len(HANDS_TEXT) < _HERMES_TOTAL_BUDGET * 0.6
-    for sid in (CORE_ID, HANDS_ID):  # Hermes' id rule
+    for text in (CORE_TEXT, HANDS_TEXT, BLOCKS_TEXT):
+        assert len(text) <= SECTION_MAX_CHARS
+    # Leave other plugins room: Hermes skips whatever overflows the shared budget.
+    assert len(CORE_TEXT) + len(HANDS_TEXT) + len(BLOCKS_TEXT) < _HERMES_TOTAL_BUDGET * 0.7
+    for sid in (CORE_ID, HANDS_ID, BLOCKS_ID):  # Hermes' id rule
         assert re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", sid)
 
 
 def test_text_is_generic():
-    for text in (CORE_TEXT, HANDS_TEXT):
+    for text in (CORE_TEXT, HANDS_TEXT, BLOCKS_TEXT):
         assert not re.search(r"\b(Jonny|Sy|SILAS)\b", text)
         assert "/home/" not in text
 
@@ -95,7 +99,7 @@ def test_register_sections_survives_a_refusal():
             super().register_system_prompt_section(id, content, **kw)
 
     ctx = Refusing()
-    assert register_sections(ctx, frozenset({"matrix"})) == [HANDS_ID]
+    assert register_sections(ctx, frozenset({"matrix"})) == [HANDS_ID, BLOCKS_ID]
 
 
 def _register_with(monkeypatch, config):
@@ -112,7 +116,7 @@ def _register_with(monkeypatch, config):
 
 def test_register_wires_sections_and_reports_the_feature(monkeypatch):
     ctx, probe = _register_with(monkeypatch, PluginConfig(enabled=True, token="t"))
-    assert set(ctx.sections) == {CORE_ID, HANDS_ID}
+    assert set(ctx.sections) == {CORE_ID, HANDS_ID, BLOCKS_ID}
     assert ctx.sections[CORE_ID]({"platform": "api_server"}) == CORE_TEXT
     assert ctx.sections[HANDS_ID]({"platform": "tui"}) == ""
     assert "prompt.markers" in probe.stream_features()
@@ -141,3 +145,16 @@ def test_load_config_markers_block(monkeypatch):
     assert cfg.markers is True and cfg.markers_platforms == frozenset({"api_server", "tui"})
     assert with_block({"markers": False}).markers is False
     assert with_block({"markers": {"enabled": "off"}}).markers is False
+
+
+def test_blocks_teach_every_fence_the_app_draws():
+    """Each language here is one the app's RichBlocks / MessageParser intercepts; a fence the
+    prompt teaches but the app doesn't draw would just be code."""
+    for lang in ("chart", "diff", "csv", "tsv", "timeline", "progress", "swatch", "card", "details", "svg"):
+        assert "```" + lang in BLOCKS_TEXT, lang
+    for kind in ("NOTE", "TIP", "IMPORTANT", "WARNING", "CAUTION"):
+        assert "[!" + kind + "]" in BLOCKS_TEXT
+    import json
+    example = re.search(r"```chart with JSON: (\{.*?\});", BLOCKS_TEXT).group(1)
+    spec = json.loads(example)
+    assert spec["type"] == "bar" and len(spec["labels"]) == len(spec["series"][0]["values"])

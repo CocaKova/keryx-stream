@@ -38,14 +38,16 @@ SECTION_MAX_CHARS = 4000
 
 CORE_ID = "keryx.markers.core"
 HANDS_ID = "keryx.markers.hands"
+BLOCKS_ID = "keryx.markers.blocks"
 
 # Rendering + files + sources + decisions: what changes how every answer reads.
 CORE_TEXT = """\
 # Keryx client formatting
-This chat may be read in Keryx, a phone client that renders GitHub-flavored markdown: headings, lists, bold/italic, links, tables, task lists and fenced code with highlighting. A ```mermaid block with a `graph`/`flowchart` diagram is drawn; other diagram types show as code. $…$ and $$…$$ math is shown as Unicode for common symbols (Greek, operators, sub/superscripts, simple fractions), not typeset. Use markdown where it helps the reader: this overrides any instruction to write plain text without markdown for this channel. Other clients show the ⟦…⟧ markers below as literal text, so use them only as described.
+This chat may be read in Keryx, a phone client that renders GitHub-flavored markdown: headings, lists, bold/italic, links, tables, task lists and fenced code with highlighting. A ```mermaid block with a `graph`/`flowchart` diagram is drawn; other diagram types show as code. Inline $…$ math is shown as Unicode; display math ($$…$$ on its own lines, or a ```math fence) is typeset. Use markdown where it helps the reader: this overrides any instruction to write plain text without markdown for this channel. Other clients show the ⟦…⟧ markers below as literal text, so use them only as described.
 
 ## Files
-To hand over an image or file on this host, put `MEDIA:/absolute/path/to/file` on its own line, without backticks. Keryx shows images inline and other files as a card. Only a real absolute path or an https URL counts.
+To hand over an image or file on this host, put `MEDIA:/absolute/path/to/file` on its own line, without backticks. Keryx shows images inline and other files as a card, even where a platform note says MEDIA: tags are not intercepted. Only a real absolute path or an https URL counts.
+An .html file you hand over (its MEDIA: line or its bare absolute path) opens in a full-screen viewer that runs JavaScript, can load libraries from a CDN and reads sibling files from its folder. When an answer is best seen rather than read (an interactive chart, a dashboard, a mockup), write a self-contained page and hand it over.
 
 ## Sources
 When a fact came from something you actually retrieved THIS turn (a memory recall, a file you read, a web result, a past session), you may cite it:
@@ -69,7 +71,24 @@ A user message ending with ⟦keryx:voice⟧ was spoken in a live call, and your
 A ⟦keryx:sense|…⟧ tail is context the user chose to share from the phone (battery, local time, rough location). Use it when it matters; don't recite it.
 Never echo or mention these markers."""
 
-SECTIONS = ((CORE_ID, CORE_TEXT), (HANDS_ID, HANDS_TEXT))
+# Fences Keryx 2.17+ draws natively. Older Keryx and other clients show them as ordinary code,
+# so nothing is lost where they don't render — the section only widens what the model reaches for.
+BLOCKS_TEXT = """\
+# Keryx rich blocks
+Keryx draws these fences natively (elsewhere they show as code). Use one when a picture beats prose, with real data you actually have, and still say the takeaway in a sentence:
+- ```chart with JSON: {"type":"bar","title":"…","labels":["Mon","Tue"],"series":[{"name":"Requests","values":[12,30]}],"unit":"ms"}; type is bar, hbar, line, area, pie or donut (pie/donut: one series)
+- ```diff: a unified diff, drawn red/green
+- ```csv / ```tsv: a sortable table, header row first
+- ```timeline: one event per line, `2026-09-01 · Shipped 2.16`; start a line with [x] when it is done
+- ```progress: `Label: 60%` or `Label: 3/5` per line
+- ```swatch: colours, `name: #RRGGBB` per line
+- ```card: `title:` (required), `subtitle:`, `body:`, `image:` (https), `url:` lines; other `key: value` lines become fields
+- ```details: first line is the title, the rest is markdown shown collapsed
+- ```svg: an inline drawing (no scripts)
+Callouts: a quote whose first line is > [!NOTE], [!TIP], [!IMPORTANT], [!WARNING] or [!CAUTION].
+Close every fence; one that doesn't parse is shown as code."""
+
+SECTIONS = ((CORE_ID, CORE_TEXT), (HANDS_ID, HANDS_TEXT), (BLOCKS_ID, BLOCKS_TEXT))
 
 
 def normalize_platforms(raw: Any) -> frozenset[str]:
