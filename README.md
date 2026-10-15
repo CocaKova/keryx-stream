@@ -24,6 +24,10 @@ It runs on the public plugin surface only. Nothing in the hermes-agent tree is p
 
 keryx-stream is a personal project and is not affiliated with or endorsed by Nous Research.
 
+Credits: `hermes keryx pair` draws its QR code with [Project Nayuki's QR Code generator
+library](https://www.nayuki.io/page/qr-code-generator-library) (MIT), bundled unmodified. See
+[THIRD-PARTY.md](THIRD-PARTY.md).
+
 ## Install
 
 From a clone. The package is not published on PyPI.
@@ -42,7 +46,9 @@ Hermes loads a user plugin only once it is **enabled**; without that step the pl
 ignored. `hermes plugins list` shows its status, and after a Hermes update `hermes plugins compat`
 reports any import this plugin uses that the update retired.
 
-Then in Keryx, Settings → **Hermes Link**: Gateway URL `http://<host>:8646`, your key, **Test link**.
+Then pair the app: run `hermes keryx pair` and scan the code in Keryx (see [Pair a phone](#pair-a-phone)).
+To set it up by hand instead: Settings → **Hermes Link**, Gateway URL `http://<host>:8646`, your key,
+**Test link**.
 
 <details>
 <summary>Other ways to install</summary>
@@ -60,6 +66,39 @@ pip install -e .
 ```
 
 </details>
+
+## Pair a phone
+
+```bash
+hermes keryx pair
+```
+
+prints a QR code. In Keryx, tap **Connect your gateway › Scan a pairing code**, sign in to the
+dashboard as usual, and the phone is paired. `hermes keryx devices` lists the paired phones and
+`hermes keryx revoke <id>` unpairs one.
+
+What the QR holds, and what it doesn't:
+
+- **This gateway's address, its Link's address and a one-time code.** No key, no password. A gated
+  dashboard still signs the phone in through its own password page in the browser.
+- **The code works once,** for 10 minutes at most (`--minutes`, up to 30), and only while the command
+  runs: stopping it withdraws the code. Five wrong tries burn it. A photo of the QR, the terminal's
+  scrollback or a transcript that captured it is worthless afterwards.
+- **The phone gets a token of its own,** not `API_SERVER_KEY`. It opens the app's routes and nothing
+  else (`/keryx/publish` stays master-only), and `hermes keryx revoke` cuts off one phone without
+  touching the master key. Only hashes of codes and tokens are stored
+  (`<HERMES_HOME>/keryx_pairing.json`, mode 0600).
+- **The app checks before it trusts.** It acts on a code only from its own scanner (the same code
+  opened as a link from a web page, another app or the camera app pairs nothing), shows the host
+  before connecting, refuses a Link on another host than the gateway, and warns about plain `http`
+  to a public address.
+
+Addresses come from `--url` / `--link`, then `keryx_stream.pair.gateway_url` / `link_url` in
+config.yaml, then `tailscale serve` (the HTTPS name it serves the dashboard on, port 9119 unless
+`keryx_stream.pair.dashboard_port` says otherwise). The Link defaults to the same host on its port.
+
+Revoking a phone ends its Link token. Its dashboard sign-in is separate: with Hermes' basic auth,
+change `dashboard.basic_auth.secret` and restart the dashboard to end every session.
 
 ## One URL for the app
 
@@ -353,4 +392,4 @@ It is published as a standalone plugin because Hermes keeps third-party integrat
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). Bundled third-party code and its license: [THIRD-PARTY.md](THIRD-PARTY.md).

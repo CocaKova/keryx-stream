@@ -1,6 +1,11 @@
 # Ruff baseline for keryx-stream: keep the ruleset explicit and the noise low.
 # S110/BLE001: best-effort publish/mirror paths swallow by design (never raise
 # into the agent's stream or tool path); that is the documented contract.
+
+# Vendored unmodified (Project Nayuki's QR Code generator, MIT): kept
+# byte-identical to upstream, so it is not linted.
+extend-exclude = ["keryx_stream/_qrcodegen.py"]
+
 [lint]
 select = ["E", "F", "W", "I", "B", "UP"]
 ignore = [
@@ -11,4 +16,3 @@ ignore = [
 
 [lint.per-file-ignores]
 "tests/*" = ["RUF059"]
-

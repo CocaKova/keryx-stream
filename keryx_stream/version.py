@@ -21,8 +21,9 @@ __version__ = "0.5.0"
 # Checked against 0.21.3 and 0.21.5 trees; older releases are untested.
 REQUIRES_HERMES = ">=0.21.3"
 
-# Always served by server.py itself.
-CORE_FEATURES = ("stream", "stream.chat_key", "publish", "toolsets")
+# Always served by server.py itself. "pair" = POST /keryx/pair/claim and device
+# tokens (pairing.py), so `hermes keryx pair` and the app know the Link can pair.
+CORE_FEATURES = ("stream", "stream.chat_key", "publish", "toolsets", "pair")
 
 
 def features(*, panel_features=(), proxy: bool = False, probe=None) -> list[str]:

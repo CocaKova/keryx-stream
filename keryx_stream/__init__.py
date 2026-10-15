@@ -474,9 +474,29 @@ def _log_hints(forwarding: bool) -> None:
 _server_thread: threading.Thread | None = None
 
 
+def _register_cli(ctx) -> None:
+    """``hermes keryx pair|devices|revoke`` (pair_cli.py). Registered even with
+    the plugin disabled, so the devices can still be listed and revoked."""
+    register_cli = getattr(ctx, "register_cli_command", None)
+    if register_cli is None:
+        return
+    from . import pair_cli
+
+    try:
+        register_cli(
+            name="keryx", help="pair the Keryx app by QR; list or revoke paired phones",
+            setup_fn=pair_cli.setup, handler_fn=pair_cli.handle,
+            description="hermes keryx pair     show a one-time QR code for the Keryx app\n"
+                        "hermes keryx devices  list the phones paired with this Link\n"
+                        "hermes keryx revoke   unpair one")
+    except Exception:
+        logger.debug("keryx-stream: could not register the `hermes keryx` command", exc_info=True)
+
+
 def register(ctx) -> None:
     """Plugin entry point (called by Hermes' PluginManager at discovery)."""
     global _server_thread
+    _register_cli(ctx)
     config = load_config()
     if not config.enabled:
         logger.info("keryx-stream: disabled via config.yaml (keryx_stream.enabled=false)")

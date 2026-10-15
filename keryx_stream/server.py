@@ -8,7 +8,9 @@ is fully decoupled. Routes:
        token deltas (event: delta / segment / reasoning / stop / ping).
   POST /keryx/publish                           — bearer-authed ingest for
        non-hub processes (forward mode): same frames the hooks emit, published
-       into this process's hub.
+       into this process's hub. Master key only.
+  POST /keryx/pair/claim                        — trades the one-time code
+       from ``hermes keryx pair`` for a device token (pairing.py).
   GET  /keryx/toolsets?platform=<p>             — toolset view for the platform.
   PUT  /keryx/toolsets/{name}                   — toggle one toolset.
   GET  /keryx/health                            — liveness + version + the
@@ -20,7 +22,9 @@ is fully decoupled. Routes:
   anything else                                 — relayed to the native API
        server (proxy.py), so the app needs one URL, not two.
 
-All routes except the health probes require ``Authorization: Bearer <token>``.
+All routes except the health probes and the pairing claim require
+``Authorization: Bearer <token>``: the master key (``API_SERVER_KEY``), or a
+paired phone's device token everywhere but ``/keryx/publish``.
 """
 from __future__ import annotations
 
@@ -29,8 +33,10 @@ import hmac
 import json
 import logging
 
+from . import pairing
 from . import toolsets as toolsets_mod
 from .hub import drain_coalesced, hub
+from .pairing import DeviceTokens
 from .probe import probe
 from .scope import make_scope_middleware
 from .version import REQUIRES_HERMES, __version__, features
@@ -57,7 +63,9 @@ def build_app(config) -> object:
     """Build the aiohttp Application for the given PluginConfig."""
     from aiohttp import web
 
-    def check_auth(request: web.Request) -> web.Response | None:
+    devices = DeviceTokens()
+
+    def check_auth(request: web.Request, master_only: bool = False) -> web.Response | None:
         if not config.token:
             # A token that appeared after startup (.env edited, secret source
             # hydrated late) is picked up here; still none → refuse everything
@@ -71,9 +79,13 @@ def build_app(config) -> object:
         if not header.startswith("Bearer "):
             return _unauthorized(web)
         presented = header[7:].strip()
-        if not hmac.compare_digest(presented, config.token):
-            return _unauthorized(web)
-        return None
+        if hmac.compare_digest(presented, config.token):
+            return None
+        # A paired phone's own token (pairing.py): the app's routes, never the
+        # forwarders' publish door.
+        if not master_only and devices.verify(presented):
+            return None
+        return _unauthorized(web)
 
     async def handle_health(request):
         feats = await asyncio.to_thread(
@@ -174,7 +186,7 @@ def build_app(config) -> object:
         return web.json_response(payload, status=status)
 
     async def handle_publish(request: web.Request) -> web.Response:
-        auth_err = check_auth(request)
+        auth_err = check_auth(request, master_only=True)
         if auth_err is not None:
             return auth_err
         try:
@@ -199,11 +211,36 @@ def build_app(config) -> object:
         hub.publish_threadsafe(platform, chat_id, event, text)
         return web.json_response({"ok": True})
 
+    async def handle_pair_claim(request: web.Request) -> web.Response:
+        # No bearer here: the one-time code from `hermes keryx pair` is the
+        # credential, and pairing.claim enforces single use, expiry and the
+        # wrong-try limit. Without a master key there is nothing to pair into.
+        no_store = {"Cache-Control": "no-store"}
+        if not config.token:
+            from .auth import resolve_token
+
+            config.token, config.token_source = resolve_token()
+        if not config.token:
+            return web.json_response(
+                {"error": {"message": "This Link has no key yet (API_SERVER_KEY), so it can't pair."}},
+                status=503, headers=no_store)
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        if not isinstance(body, dict):
+            return web.json_response(
+                {"error": {"message": "JSON body required"}}, status=400, headers=no_store)
+        result = await asyncio.to_thread(
+            pairing.claim, body.get("code"), body.get("name"), request.remote or "")
+        return web.json_response(result.body, status=result.status, headers=no_store)
+
     app = web.Application(middlewares=[make_scope_middleware()])
     app[_PANELS_KEY] = []
     app.router.add_get("/keryx/health", handle_health)
     app.router.add_get("/keryx/stream", handle_stream)
     app.router.add_post("/keryx/publish", handle_publish)
+    app.router.add_post("/keryx/pair/claim", handle_pair_claim)
     app.router.add_get("/keryx/toolsets", handle_toolsets_get)
     app.router.add_put("/keryx/toolsets/{name}", handle_toolset_put)
     if config.panels:
