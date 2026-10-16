@@ -44,7 +44,12 @@ curl -s localhost:8646/keryx/health    # {"ok": true, "version": "0.5.0", "featu
 
 `install.sh` honors `HERMES_HOME` and prints the config block and the token you still need to set.
 Hermes loads a user plugin only once it is **enabled**; without that step the plugin is discovered and
-ignored. `hermes plugins list` shows its status, and after a Hermes update `hermes plugins compat`
+ignored.
+
+Keryx's Missions, Runs and Hub reach Hermes's own API server through the Link (see
+[One URL for the app](#one-url-for-the-app)), and a fresh Hermes doesn't run it. Turn it on in
+`~/.hermes/.env` with `API_SERVER_ENABLED=true` and an `API_SERVER_KEY`, then restart the gateway.
+`hermes keryx pair` warns when it isn't answering. `hermes plugins list` shows its status, and after a Hermes update `hermes plugins compat`
 reports any import this plugin uses that the update retired.
 
 Then pair the app: run `hermes keryx pair` and scan the code in Keryx (see [Pair a phone](#pair-a-phone)).

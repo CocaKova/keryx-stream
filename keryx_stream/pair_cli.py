@@ -24,6 +24,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime
 from urllib.parse import quote, urlsplit
@@ -214,6 +215,33 @@ def _link_has_pairing(cfg: dict) -> tuple[bool, str]:
     return True, ""
 
 
+API_SERVER_OFF = (
+    "Hermes's API server isn't answering behind the Link, so Missions, Runs and the Hub won't "
+    "load in Keryx. Turn it on: API_SERVER_ENABLED=true and an API_SERVER_KEY in ~/.hermes/.env, "
+    "then hermes gateway restart."
+)
+
+
+def api_server_up(cfg: dict, timeout: float = 2.0) -> bool | None:
+    """Whether the API server the Link relays to answers its open ``/health``. None when the
+    relay is off (``upstream_url: ""``): nothing behind the Link is expected then.
+
+    A stock Hermes runs no API server until it's turned on, and the pairing itself works without
+    one; only the app's Missions, Runs and Hub find out later, as a bare 502 (VIRDARA, 10-16)."""
+    from . import _upstream_url
+
+    upstream = _upstream_url(cfg)
+    if not upstream:
+        return None
+    try:
+        with urllib.request.urlopen(upstream.rstrip("/") + "/health", timeout=timeout):  # noqa: S310
+            return True
+    except urllib.error.HTTPError as exc:
+        return exc.code < 500
+    except Exception:
+        return False
+
+
 def cmd_pair(args) -> int:
     cfg = _plugin_config()
     minutes = max(MIN_MINUTES, min(MAX_MINUTES, int(args.minutes)))
@@ -242,6 +270,8 @@ def cmd_pair(args) -> int:
             if parts.scheme == "http" and not is_private_host(parts.hostname or ""):
                 print(f"  ⚠ The {where} address is plain http on a public host: "
                       "traffic to it isn't encrypted.")
+        if api_server_up(cfg) is False:
+            print("  ⚠ " + API_SERVER_OFF)
         print(f"  The code works once, until {expires} or until you stop this command. "
               "It holds no key and no password.")
         print("  Waiting for the phone… (Ctrl-C to cancel)")

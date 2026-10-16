@@ -66,9 +66,11 @@ fi
 echo
 echo "Next:"
 echo "  1. hermes plugins enable keryx-stream     # user plugins load only once enabled"
-echo "  2. hermes gateway restart"
-echo "  3. curl -s localhost:8646/keryx/health     # version + feature list"
-echo "  4. Keryx → Settings → Gateways → Hermes Link: http://<this-host>:8646 + your key → Test link"
+echo "  2. In $ENV_FILE: API_SERVER_ENABLED=true and an API_SERVER_KEY"
+echo "     (Missions, Runs and the Hub reach Hermes's API server through the Link)"
+echo "  3. hermes gateway restart"
+echo "  4. curl -s localhost:8646/keryx/health     # version + feature list"
+echo "  5. hermes keryx pair                       # scan the code in Keryx to connect the phone"
 echo
 echo "Needs a hermes-agent with the shipped stream observer hooks (on_stream_start/"
 echo "delta/end). After a Hermes update, \`hermes plugins compat\` reports retired imports."

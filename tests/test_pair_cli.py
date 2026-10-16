@@ -102,3 +102,30 @@ def test_pair_refuses_when_the_running_link_cant_pair(monkeypatch, capsys):
     assert pair_cli.cmd_pair(Args()) == 1
     assert "restart the gateway" in capsys.readouterr().err
     assert not (pairing.store_path()).exists()  # no code minted
+
+
+def test_the_api_server_behind_the_link_is_checked(monkeypatch):
+    # Nothing listens on this port: a fresh Hermes with no API server (VIRDARA, 10-16).
+    assert pair_cli.api_server_up({"upstream_url": "http://127.0.0.1:9"}, timeout=0.5) is False
+    # The relay turned off: nothing behind the Link is expected.
+    assert pair_cli.api_server_up({"upstream_url": ""}) is None
+
+
+def test_the_api_server_answering_is_up(monkeypatch):
+    import http.server
+    import threading
+
+    class Ok(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200 if self.path == "/health" else 404)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Ok)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        assert pair_cli.api_server_up({"upstream_url": f"http://127.0.0.1:{srv.server_port}"}) is True
+    finally:
+        srv.shutdown()
