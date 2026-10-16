@@ -302,15 +302,25 @@ def test_tool_frames_follow_the_sessions_surface():
 
 
 def test_manifest_matches_the_code():
-    """plugin.yaml declares every hook register() wires, the package version,
-    and the same Hermes floor version.py reports on /keryx/health."""
+    """plugin.yaml declares every hook register() wires and the tool it offers,
+    the package version, and the same Hermes floor version.py reports on
+    /keryx/health."""
     from pathlib import Path
 
+    from keryx_stream.tour import TOOL_NAME
     from keryx_stream.version import REQUIRES_HERMES, __version__
 
     text = (Path(keryx_stream.__file__).parent / "plugin.yaml").read_text()
-    declared = [line.strip()[2:] for line in text.splitlines() if line.startswith("  - ")]
-    assert sorted(declared) == sorted(_ALL_HOOKS)
+    lists: dict[str, list[str]] = {}
+    current = None
+    for line in text.splitlines():
+        if line.startswith("  - ") and current is not None:
+            lists[current].append(line.strip()[2:])
+        elif line and not line.startswith(" "):
+            current = line.split(":", 1)[0]
+            lists.setdefault(current, [])
+    assert sorted(lists["provides_hooks"]) == sorted(_ALL_HOOKS)
+    assert lists["provides_tools"] == [TOOL_NAME]
     assert f"version: {__version__}\n" in text
     assert f'requires_hermes: "{REQUIRES_HERMES}"' in text
 

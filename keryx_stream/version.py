@@ -23,7 +23,8 @@ REQUIRES_HERMES = ">=0.21.3"
 
 # Always served by server.py itself. "pair" = POST /keryx/pair/claim and device
 # tokens (pairing.py), so `hermes keryx pair` and the app know the Link can pair.
-CORE_FEATURES = ("stream", "stream.chat_key", "publish", "toolsets", "pair")
+# "tour" = the Link takes a phone's answers to keryx_tour (tour.py).
+CORE_FEATURES = ("stream", "stream.chat_key", "publish", "toolsets", "pair", "tour")
 
 
 def features(*, panel_features=(), proxy: bool = False, probe=None) -> list[str]:

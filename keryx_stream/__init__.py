@@ -53,6 +53,9 @@ from .hub import hub
 from .markers import DEFAULT_PLATFORMS, normalize_platforms, register_sections
 from .probe import config_hints, probe
 from .routing import SessionRoutes
+from .tour import TOOL_NAME as TOUR_TOOL
+from .tour import note_call as note_tour_call
+from .tour import register_tool as register_tour
 from .turns import TurnTracker
 
 logger = logging.getLogger("keryx_stream")
@@ -84,6 +87,8 @@ class PluginConfig:
     # for sessions on these platforms.
     markers: bool = True
     markers_platforms: frozenset = field(default_factory=lambda: frozenset(DEFAULT_PLATFORMS))
+    # Offer keryx_tour (tour.py) to Keryx's sessions; ``tour: false`` turns it off.
+    tour: bool = True
 
 
 def load_config() -> PluginConfig:
@@ -121,6 +126,7 @@ def load_config() -> PluginConfig:
         idle_stop_s=float(cfg.get("idle_stop_s", 45.0)),
         markers=str(markers.get("enabled", True)).strip().lower() not in {"false", "off", "no", "0"},
         markers_platforms=normalize_platforms(markers.get("platforms")),
+        tour=str(cfg.get("tour", True)).strip().lower() not in {"false", "off", "no", "0"},
     )
 
 
@@ -256,6 +262,8 @@ def _make_hook_callbacks(config: PluginConfig, publish: Callable[..., None],
 
     def on_pre_tool(*, session_id=None, tool_name=None, args=None, tool_call_id="", task_id="",
                     turn_id="", surface=None, **_):
+        # Before anything that can return early: a Keryx session is tui, not a chat surface.
+        note_tour_call(tool_name, tool_call_id)
         sid = learn(surface, session_id)
         if not sid:
             return None
@@ -474,6 +482,21 @@ def _log_hints(forwarding: bool) -> None:
 _server_thread: threading.Thread | None = None
 
 
+def _link_base(config: PluginConfig) -> str:
+    """The Link this process's tools talk to: the hub owner, here or in the gateway."""
+    if config.forward_url:
+        return config.forward_url.split("/keryx/", 1)[0]
+    return f"http://127.0.0.1:{config.port}"
+
+
+def _master_token(config: PluginConfig) -> str:
+    if not config.token:
+        from .auth import resolve_token
+
+        config.token, config.token_source = resolve_token()
+    return config.token
+
+
 def _register_cli(ctx) -> None:
     """``hermes keryx pair|devices|revoke`` (pair_cli.py). Registered even with
     the plugin disabled, so the devices can still be listed and revoked."""
@@ -549,6 +572,10 @@ def register(ctx) -> None:
     if config.markers:
         for section_id in register_sections(ctx, config.markers_platforms):
             probe.registered(f"prompt_section:{section_id}")
+
+    if config.tour:
+        if register_tour(ctx, _link_base(config), lambda: _master_token(config)):
+            probe.registered(f"tool:{TOUR_TOOL}")
 
     _log_hints(forwarding=loop is None)
 

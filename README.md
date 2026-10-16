@@ -25,8 +25,9 @@ It runs on the public plugin surface only. Nothing in the hermes-agent tree is p
 keryx-stream is a personal project and is not affiliated with or endorsed by Nous Research.
 
 Credits: `hermes keryx pair` draws its QR code with [Project Nayuki's QR Code generator
-library](https://www.nayuki.io/page/qr-code-generator-library) (MIT), bundled unmodified. See
-[THIRD-PARTY.md](THIRD-PARTY.md).
+library](https://www.nayuki.io/page/qr-code-generator-library) (MIT), bundled unmodified. The
+`keryx_tour` tool's schema and argument checks are adapted from Hermes's own `gui_tour`
+(`tools/tour_tool.py`, MIT, Nous Research). See [THIRD-PARTY.md](THIRD-PARTY.md).
 
 ## Install
 
@@ -100,6 +101,28 @@ config.yaml, then `tailscale serve` (the HTTPS name it serves the dashboard on, 
 Revoking a phone ends its Link token. Its dashboard sign-in is separate: with Hermes' basic auth,
 change `dashboard.basic_auth.secret` and restart the dashboard to end every session.
 
+## The agent points at the phone
+
+Ask your agent "where do I set up a cron?" from Keryx and it can spotlight the real button.
+Hermes's own guided tour, `gui_tour`, is offered only to Hermes Desktop. Keryx sessions are `tui`
+sessions, so the plugin offers the same tour as `keryx_tour`: the same actions (`targets`, `show`,
+`start`, `next`, `prev`, `stop`), the same argument checks and the same deadlines (a 10 s probe
+per session, then 45 s).
+
+- **How a call reaches the phone.** The gateway already sends every client a `tool.start` event
+  with the call's id and arguments. Keryx runs the action in its tour engine and posts the outcome
+  to `POST /keryx/tour/respond` (a paired phone's token or the master key). The tool long-polls the
+  Link for it with `GET /keryx/tour/wait` (master key only), so it works whichever process runs the
+  agent.
+- **Who gets the tool.** Only sessions without a messaging platform whose source is `tui`, which is
+  how the Keryx direct door connects. Telegram, Matrix and other chat sessions, Desktop (it has
+  `gui_tour`) and the CLI don't see it, and a session's tool list never changes under it.
+- **When no phone answers** (Keryx closed, an older Keryx, or `display.tool_progress: off`, which
+  stops `tool.start`), the first call waits out the 10 s probe and tells the agent not to retry in
+  that session.
+
+`keryx_stream.tour: false` turns the tool off.
+
 ## One URL for the app
 
 The plugin runs its own HTTP server (default `:8646`, bearer auth) and adds no route to the gateway's
@@ -135,6 +158,7 @@ keryx_stream:
   markers:                     # teach the agent Keryx's ⟦…⟧ markers (see below); `markers: false` = off
     enabled: true
     platforms: [api_server, matrix]
+  tour: true                   # offer keryx_tour to Keryx's sessions (see "The agent points at the phone")
 ```
 
 **The token is a secret**, so it comes from the environment, not this file: set `KERYX_STREAM_TOKEN`,
