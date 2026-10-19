@@ -18,7 +18,7 @@ __version__ = "0.6.0"
 # with ``turn_id`` (agent/turn_finalizer.py ``_apply_output_hooks``),
 # ``post_api_request`` with ``usage``, ``subagent_start``/``subagent_stop``,
 # ``pre/post_auxiliary_call`` and ``ctx.register_middleware("llm_request")``.
-# Checked against 0.21.3 and 0.21.5 trees; older releases are untested.
+# Checked against 0.21.3, 0.21.5 and 0.22.2 trees; older releases are untested.
 REQUIRES_HERMES = ">=0.21.3"
 
 # Always served by server.py itself. "pair" = POST /keryx/pair/claim and device
