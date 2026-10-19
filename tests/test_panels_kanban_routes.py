@@ -36,18 +36,18 @@ def board(tmp_path, monkeypatch):
 
 def test_create_requires_title_and_assignee(board):
     with pytest.raises(ValueError):
-        ks.kanban_create(kb, board, {"assignee": "milo"})
+        ks.kanban_create(kb, board, {"assignee": "scout"})
     with pytest.raises(ValueError):
         ks.kanban_create(kb, board, {"title": "orphan mission"})
 
 
 def test_create_then_board_snapshot_groups_by_status(board):
-    created = ks.kanban_create(kb, board, {"title": "ship 1.6", "assignee": "milo"})
+    created = ks.kanban_create(kb, board, {"title": "ship 1.6", "assignee": "scout"})
     assert created["task_id"]
     # No parents -> dispatchable immediately.
     assert created["status"] == "ready"
     parked = ks.kanban_create(
-        kb, board, {"title": "spec first", "assignee": "theo", "triage": True}
+        kb, board, {"title": "spec first", "assignee": "atlas", "triage": True}
     )
     assert parked["status"] == "triage"
 
@@ -62,7 +62,7 @@ def test_create_then_board_snapshot_groups_by_status(board):
 
 
 def test_detail_carries_comments_and_unknown_task_is_none(board):
-    tid = ks.kanban_create(kb, board, {"title": "t", "assignee": "milo"})["task_id"]
+    tid = ks.kanban_create(kb, board, {"title": "t", "assignee": "scout"})["task_id"]
     ks.kanban_comment(kb, board, tid, "from the phone")
     detail = ks.kanban_task_detail(kb, board, tid)
     assert detail["task"]["id"] == tid
@@ -74,7 +74,7 @@ def test_detail_carries_comments_and_unknown_task_is_none(board):
 
 
 def test_subscribe_list_unsubscribe_roundtrip(board):
-    tid = ks.kanban_create(kb, board, {"title": "alertable", "assignee": "milo"})["task_id"]
+    tid = ks.kanban_create(kb, board, {"title": "alertable", "assignee": "scout"})["task_id"]
     out = ks.kanban_subscribe(kb, board, tid, {"platform": "matrix", "chat_id": "!room:x"})
     assert out == {"task_id": tid, "subscribed": True}
     # Idempotent: upstream is INSERT OR IGNORE on (task, platform, chat, thread).
@@ -94,7 +94,7 @@ def test_subscribe_list_unsubscribe_roundtrip(board):
 
 def test_subscribe_validates_task_and_chat(board):
     assert ks.kanban_subscribe(kb, board, "no-such-task", {"chat_id": "!r:x"}) is None
-    tid = ks.kanban_create(kb, board, {"title": "t", "assignee": "milo"})["task_id"]
+    tid = ks.kanban_create(kb, board, {"title": "t", "assignee": "scout"})["task_id"]
     with pytest.raises(ValueError):
         ks.kanban_subscribe(kb, board, tid, {})
     with pytest.raises(ValueError):
@@ -102,7 +102,7 @@ def test_subscribe_validates_task_and_chat(board):
 
 
 def test_events_cursor_is_incremental(board):
-    tid = ks.kanban_create(kb, board, {"title": "watched", "assignee": "milo"})["task_id"]
+    tid = ks.kanban_create(kb, board, {"title": "watched", "assignee": "scout"})["task_id"]
     first = ks.kanban_events_since(board, 0)
     assert first["events"] and first["cursor"] > 0
     # Nothing new -> empty page, cursor unchanged.
@@ -119,7 +119,7 @@ def test_detail_runs_carry_a_session_id_key(board, monkeypatch):
     """Every run names its worker session, or None — a claimed run whose worker
     never started a session (none in this isolated home) is None, not missing."""
     monkeypatch.setattr(ks, "_profile_state_db", lambda profile: None)
-    tid = ks.kanban_create(kb, board, {"title": "linked", "assignee": "milo"})["task_id"]
+    tid = ks.kanban_create(kb, board, {"title": "linked", "assignee": "scout"})["task_id"]
     kb.claim_task(board, tid)
     runs = ks.kanban_task_detail(kb, board, tid)["runs"]
     assert runs and all("session_id" in r and r["session_id"] is None for r in runs)

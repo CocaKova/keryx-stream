@@ -24,6 +24,11 @@ It runs on the public plugin surface only. Nothing in the hermes-agent tree is p
 
 keryx-stream is a personal project and is not affiliated with or endorsed by Nous Research.
 
+Credits: `hermes keryx pair` draws its QR code with [Project Nayuki's QR Code generator
+library](https://www.nayuki.io/page/qr-code-generator-library) (MIT), bundled unmodified. The
+`keryx_tour` tool's schema and argument checks are adapted from Hermes's own `gui_tour`
+(`tools/tour_tool.py`, MIT, Nous Research). See [THIRD-PARTY.md](THIRD-PARTY.md).
+
 ## Install
 
 From a clone. The package is not published on PyPI.
@@ -34,15 +39,22 @@ cd keryx-stream
 ./install.sh            # symlinks the package into ~/.hermes/plugins/ (or --copy)
 hermes plugins enable keryx-stream
 hermes gateway restart
-curl -s localhost:8646/keryx/health    # {"ok": true, "version": "0.5.0", "features": [...]}
+curl -s localhost:8646/keryx/health    # {"ok": true, "version": "0.6.0", "features": [...]}
 ```
 
 `install.sh` honors `HERMES_HOME` and prints the config block and the token you still need to set.
 Hermes loads a user plugin only once it is **enabled**; without that step the plugin is discovered and
-ignored. `hermes plugins list` shows its status, and after a Hermes update `hermes plugins compat`
+ignored.
+
+Keryx's Missions, Runs and Hub reach Hermes's own API server through the Link (see
+[One URL for the app](#one-url-for-the-app)), and a fresh Hermes doesn't run it. Turn it on in
+`~/.hermes/.env` with `API_SERVER_ENABLED=true` and an `API_SERVER_KEY`, then restart the gateway.
+`hermes keryx pair` warns when it isn't answering. `hermes plugins list` shows its status, and after a Hermes update `hermes plugins compat`
 reports any import this plugin uses that the update retired.
 
-Then in Keryx, Settings → **Hermes Link**: Gateway URL `http://<host>:8646`, your key, **Test link**.
+Then pair the app: run `hermes keryx pair` and scan the code in Keryx (see [Pair a phone](#pair-a-phone)).
+To set it up by hand instead: Settings → **Hermes Link**, Gateway URL `http://<host>:8646`, your key,
+**Test link**.
 
 <details>
 <summary>Other ways to install</summary>
@@ -60,6 +72,63 @@ pip install -e .
 ```
 
 </details>
+
+## Pair a phone
+
+```bash
+hermes keryx pair
+```
+
+prints a QR code. In Keryx, tap **Connect your gateway › Scan a pairing code**, sign in to the
+dashboard as usual, and the phone is paired. `hermes keryx devices` lists the paired phones and
+`hermes keryx revoke <id>` unpairs one.
+Pairing needs Keryx 3.0 or later.
+
+What the QR holds, and what it doesn't:
+
+- **This gateway's address, its Link's address and a one-time code.** No key, no password. A gated
+  dashboard still signs the phone in through its own password page in the browser.
+- **The code works once,** for 10 minutes at most (`--minutes`, up to 30), and only while the command
+  runs: stopping it withdraws the code. Five wrong tries burn it. A photo of the QR, the terminal's
+  scrollback or a transcript that captured it is worthless afterwards.
+- **The phone gets a token of its own,** not `API_SERVER_KEY`. It opens the app's routes and nothing
+  else (`/keryx/publish` stays master-only), and `hermes keryx revoke` cuts off one phone without
+  touching the master key. Only hashes of codes and tokens are stored
+  (`<HERMES_HOME>/keryx_pairing.json`, mode 0600).
+- **The app checks before it trusts.** It acts on a code only from its own scanner (the same code
+  opened as a link from a web page, another app or the camera app pairs nothing), shows the host
+  before connecting, refuses a Link on another host than the gateway, and warns about plain `http`
+  to a public address.
+
+Addresses come from `--url` / `--link`, then `keryx_stream.pair.gateway_url` / `link_url` in
+config.yaml, then `tailscale serve` (the HTTPS name it serves the dashboard on, port 9119 unless
+`keryx_stream.pair.dashboard_port` says otherwise). The Link defaults to the same host on its port.
+
+Revoking a phone ends its Link token. Its dashboard sign-in is separate: with Hermes' basic auth,
+change `dashboard.basic_auth.secret` and restart the dashboard to end every session.
+
+## The agent points at the phone
+
+Ask your agent "where do I set up a cron?" from Keryx and it can spotlight the real button.
+Hermes's own guided tour, `gui_tour`, is offered only to Hermes Desktop. Keryx sessions are `tui`
+sessions, so the plugin offers the same tour as `keryx_tour`: the same actions (`targets`, `show`,
+`start`, `next`, `prev`, `stop`), the same argument checks and the same deadlines (a 10 s probe
+per session, then 45 s).
+It needs Keryx 3.0 or later; with an older app open, the first call times out at the probe.
+
+- **How a call reaches the phone.** The gateway already sends every client a `tool.start` event
+  with the call's id and arguments. Keryx runs the action in its tour engine and posts the outcome
+  to `POST /keryx/tour/respond` (a paired phone's token or the master key). The tool long-polls the
+  Link for it with `GET /keryx/tour/wait` (master key only), so it works whichever process runs the
+  agent.
+- **Who gets the tool.** Only sessions without a messaging platform whose source is `tui`, which is
+  how the Keryx direct door connects. Telegram, Matrix and other chat sessions, Desktop (it has
+  `gui_tour`) and the CLI don't see it, and a session's tool list never changes under it.
+- **When no phone answers** (Keryx closed, an older Keryx, or `display.tool_progress: off`, which
+  stops `tool.start`), the first call waits out the 10 s probe and tells the agent not to retry in
+  that session.
+
+`keryx_stream.tour: false` turns the tool off.
 
 ## One URL for the app
 
@@ -96,6 +165,7 @@ keryx_stream:
   markers:                     # teach the agent Keryx's ⟦…⟧ markers (see below); `markers: false` = off
     enabled: true
     platforms: [api_server, matrix]
+  tour: true                   # offer keryx_tour to Keryx's sessions (see "The agent points at the phone")
 ```
 
 **The token is a secret**, so it comes from the environment, not this file: set `KERYX_STREAM_TOKEN`,
@@ -288,7 +358,7 @@ What the hooks cannot feed, and the hook Hermes would need for each, is in [GAPS
 <summary><code>/keryx/health</code>: features and hints</summary>
 
 ```json
-{"ok": true, "plugin": "keryx-stream", "version": "0.5.0", "requires_hermes": ">=0.21.3",
+{"ok": true, "plugin": "keryx-stream", "version": "0.6.0", "requires_hermes": ">=0.21.3",
  "features": ["stream", "stream.chat_key", "publish", "toolsets", "reasoning", "interim",
               "tools", "tools.diff", "segment", "stop.turn", "usage", "thinking", "..."],
  "hints": [{"key": "compression.progress_notices", "value": true, "why": "..."}]}
@@ -353,4 +423,4 @@ It is published as a standalone plugin because Hermes keeps third-party integrat
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). Bundled third-party code and its license: [THIRD-PARTY.md](THIRD-PARTY.md).

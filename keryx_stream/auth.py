@@ -78,24 +78,35 @@ def _scoped(name: str) -> str:
 
 def resolve_token() -> tuple[str, str]:
     """``(token, source)``; ``("", "")`` when nothing defines one."""
-    for name in TOKEN_VARS:
+    return _resolve(TOKEN_VARS)
+
+
+def resolve_api_server_key() -> str:
+    """The native API server's own key, from the same places as the token. The
+    relay presents it upstream whatever the phone authenticated with (the
+    master token or a paired device's token, see pairing.py)."""
+    return _resolve(("API_SERVER_KEY",))[0]
+
+
+def _resolve(names: tuple[str, ...]) -> tuple[str, str]:
+    for name in names:
         value = os.environ.get(name, "").strip()
         if value:
             return value, f"env:{name}"
     process_home = _process_home()
     values = _env_file_values(process_home)
-    for name in TOKEN_VARS:
+    for name in names:
         value = str(values.get(name) or "").strip()
         if value:
             return value, f"dotenv:{name}"
-    for name in TOKEN_VARS:
+    for name in names:
         value = _scoped(name).strip()
         if value:
             return value, f"scope:{name}"
     current = _current_home()
     if current is not None and str(current) != str(process_home):
         values = _env_file_values(current)
-        for name in TOKEN_VARS:
+        for name in names:
             value = str(values.get(name) or "").strip()
             if value:
                 return value, f"profile-dotenv:{name}"

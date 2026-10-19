@@ -19,6 +19,8 @@ from __future__ import annotations
 import logging
 import os
 
+from .auth import resolve_api_server_key
+
 logger = logging.getLogger("keryx_stream.proxy")
 
 # Hop-by-hop headers (RFC 9110 §7.6.1) plus the ones the relay sets itself.
@@ -55,7 +57,7 @@ def make_proxy_handler(upstream_url: str, check_auth):
             if auth_err is not None:
                 return auth_err
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
-        upstream_key = os.environ.get("API_SERVER_KEY", "").strip()
+        upstream_key = os.environ.get("API_SERVER_KEY", "").strip() or resolve_api_server_key()
         if upstream_key and "Authorization" in request.headers:
             headers["Authorization"] = f"Bearer {upstream_key}"
         body = await request.read() if request.can_read_body else None

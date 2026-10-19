@@ -83,8 +83,8 @@ def test_reclaim_returns_a_running_card(board):
 def test_reassign_a_running_card_reclaims_it_first(board):
     tid = _card(board)
     kb.claim_task(board, tid)
-    out = _act(board, tid, action="reassign", assignee="theo")
-    assert out["assignee"] == "theo" and out["status"] != "running"
+    out = _act(board, tid, action="reassign", assignee="atlas")
+    assert out["assignee"] == "atlas" and out["status"] != "running"
     with pytest.raises(ValueError, match="assignee is required"):
         _act(board, tid, action="reassign")
 

@@ -10,7 +10,7 @@ turn the first into the second.
 """
 from __future__ import annotations
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 # Oldest Hermes whose plugin surface this release relies on: the streaming
 # observer hooks with ``turn_id``/``iteration`` in their payloads
@@ -18,11 +18,13 @@ __version__ = "0.5.0"
 # with ``turn_id`` (agent/turn_finalizer.py ``_apply_output_hooks``),
 # ``post_api_request`` with ``usage``, ``subagent_start``/``subagent_stop``,
 # ``pre/post_auxiliary_call`` and ``ctx.register_middleware("llm_request")``.
-# Checked against 0.21.3 and 0.21.5 trees; older releases are untested.
+# Checked against 0.21.3, 0.21.5 and 0.22.2 trees; older releases are untested.
 REQUIRES_HERMES = ">=0.21.3"
 
-# Always served by server.py itself.
-CORE_FEATURES = ("stream", "stream.chat_key", "publish", "toolsets")
+# Always served by server.py itself. "pair" = POST /keryx/pair/claim and device
+# tokens (pairing.py), so `hermes keryx pair` and the app know the Link can pair.
+# "tour" = the Link takes a phone's answers to keryx_tour (tour.py).
+CORE_FEATURES = ("stream", "stream.chat_key", "publish", "toolsets", "pair", "tour")
 
 
 def features(*, panel_features=(), proxy: bool = False, probe=None) -> list[str]:
