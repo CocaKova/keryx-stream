@@ -227,7 +227,7 @@ def api_server_up(cfg: dict, timeout: float = 2.0) -> bool | None:
     relay is off (``upstream_url: ""``): nothing behind the Link is expected then.
 
     A stock Hermes runs no API server until it's turned on, and the pairing itself works without
-    one; only the app's Missions, Runs and Hub find out later, as a bare 502 (VIRDARA, 10-16)."""
+    one; only the app's Missions, Runs and Hub find out later, as a bare 502 (the build VM, 10-16)."""
     from . import _upstream_url
 
     upstream = _upstream_url(cfg)

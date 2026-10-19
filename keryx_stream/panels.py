@@ -210,7 +210,7 @@ def _reasoning_capabilities(
         base = str(model_cfg.get("base_url", "") or "").strip()
         providers_cfg = cfg.get("providers") or {}
         if isinstance(providers_cfg, dict):
-            # User-configured endpoints (silas-brain → localhost:8000) are local brains too:
+            # User-configured endpoints (home-brain → localhost:8000) are local brains too:
             # a session billed to that slug must read the local ladder, not a cloud one.
             local_slugs = {
                 str(k).strip().lower()
@@ -2867,7 +2867,7 @@ def _update_probe_entry() -> dict[str, str] | None:
 
     The shape this exists for: an install carrying a patch layer needs to know
     whether its anchors still exist in the target ref BEFORE anything mutates —
-    `silas-update --check` is one such script, a bare `hermes update --check` is
+    `my-update --check` is one such script, a bare `hermes update --check` is
     another, and a stock install has none and simply sees no button.
 
     Read-only is the CONTRACT, not something the gateway can enforce: whatever is

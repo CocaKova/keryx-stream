@@ -105,7 +105,7 @@ def test_pair_refuses_when_the_running_link_cant_pair(monkeypatch, capsys):
 
 
 def test_the_api_server_behind_the_link_is_checked(monkeypatch):
-    # Nothing listens on this port: a fresh Hermes with no API server (VIRDARA, 10-16).
+    # Nothing listens on this port: a fresh Hermes with no API server (the build VM, 10-16).
     assert pair_cli.api_server_up({"upstream_url": "http://127.0.0.1:9"}, timeout=0.5) is False
     # The relay turned off: nothing behind the Link is expected.
     assert pair_cli.api_server_up({"upstream_url": ""}) is None

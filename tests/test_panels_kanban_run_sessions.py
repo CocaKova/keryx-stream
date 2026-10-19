@@ -96,9 +96,9 @@ def test_fallback_title_and_long_title_cap(homes):
 
 def test_runs_read_their_own_profiles_db(homes):
     _state_db(homes("default") / "state.db", [("d", "kanban", "Card", T0 + 1, None)])
-    _state_db(homes("theo") / "state.db", [("t", "kanban", "Card", T0 + 101, None)])
+    _state_db(homes("atlas") / "state.db", [("t", "kanban", "Card", T0 + 101, None)])
     task = SimpleNamespace(id="t_1", title="Card")
-    runs = [_run(1, T0, T0 + 10), _run(2, T0 + 100, T0 + 110, profile="theo"),
+    runs = [_run(1, T0, T0 + 10), _run(2, T0 + 100, T0 + 110, profile="atlas"),
             _run(3, T0 + 200, T0 + 210, profile="unknown")]
     assert ks._run_session_ids(_kb(), task, runs) == ["d", "t", None]
 

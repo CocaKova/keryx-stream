@@ -61,10 +61,10 @@ def test_reply_comments_as_owner_and_unblocks(board, monkeypatch):
 
 
 def test_owner_name_comes_from_config_not_the_request(board, monkeypatch):
-    monkeypatch.setattr(ks, "_kanban_owner", lambda: "jonny")
+    monkeypatch.setattr(ks, "_kanban_owner", lambda: "sam")
     tid = ks.kanban_create(kb, board, {"title": "q", "assignee": "default"})["task_id"]
     ks.kanban_reply(kb, board, tid, {"body": "hi", "author": "hermes-system"})
-    assert kb.list_comments(board, tid)[-1].author == "jonny"
+    assert kb.list_comments(board, tid)[-1].author == "sam"
 
 
 def test_approve_completes_only_a_card_in_review(board):

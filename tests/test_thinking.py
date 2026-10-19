@@ -71,7 +71,7 @@ def test_middleware_only_touches_local_providers():
     out = mw(request=_req("high"), provider="custom", model="qwen3.8-flash-next")
     assert out["request"]["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
     assert out["source"] == "keryx-stream"
-    assert mw(request=_req("high"), provider="custom:silas-brain", model="q")["request"]
+    assert mw(request=_req("high"), provider="custom:home-brain", model="q")["request"]
 
 
 def test_kill_switches(monkeypatch):
