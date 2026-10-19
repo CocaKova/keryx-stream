@@ -34,6 +34,8 @@ import urllib.request
 from collections import OrderedDict
 from collections.abc import Callable
 
+from .markers import SECTION_MAX_CHARS
+
 logger = logging.getLogger("keryx_stream.tour")
 
 TOOL_NAME = "keryx_tour"
@@ -112,8 +114,8 @@ _STEP_SCHEMA = {
 SCHEMA = {
     "name": TOOL_NAME,
     "description": (
-        "Guided tour in the Keryx phone app the user is chatting from: dim the screen, highlight "
-        "a control, attach a titled popover. A general look around the app is ONE call: "
+        "Show the user where something is in the Keryx phone app they are chatting from: dim the "
+        "screen, highlight a control, attach a titled popover. A general look around the app is ONE call: "
         "action='start' with no steps runs Keryx's built-in tour (preset 'quick' or 'full', "
         "default full). For a custom tour, call action='targets' first; only the targets it "
         "lists exist on this phone right now. Then narrate with action='show' (one highlight "
@@ -328,8 +330,35 @@ def make_handler(bridge: TourBridge):
     return handle
 
 
+# ---- telling the agent the tool is there --------------------------------------------------------
+
+# Hermes's tool search defers every plugin tool: the model sees keryx_tour as one cut-off line in a
+# listing and has to tool_describe it before it can call it. Asked "show me where the cron jobs
+# are" from Keryx, an agent that never looked answered in words (and from memory). gui_tour is never
+# deferred on Desktop, and a plugin can't ask for that, so the habit is taught where the tool is
+# offered: Keryx's tui sessions. Rendered once per new session, like the markers.
+SECTION_ID = "keryx.tour"
+SECTION_TEXT = (
+    "Keryx, the phone app this chat may come from, can point at its own screens. When the user "
+    "asks where something is in the app or how to get to it, show them rather than describe it: "
+    "use the keryx_tour tool. If it is only listed among deferred tools, tool_describe keryx_tour, "
+    "then call it through tool_call. action='targets' lists what is on this phone right now; "
+    "action='show' highlights one target with a title and a sentence (say the same in chat); "
+    "action='start' with no steps runs the app's own tour. If no phone answers, say so, and describe "
+    "the way only as far as you actually know it."
+)
+
+
+def section(info) -> str:
+    """The tour note for a new session: Keryx's direct door runs ``tui`` sessions, where the tool is
+    offered; anywhere else it would point at a tool the agent doesn't have."""
+    platform = str((info or {}).get("platform") or "").strip().lower()
+    return SECTION_TEXT if platform == "tui" else ""
+
+
 def register_tool(ctx, base_url: str, token: Callable[[], str]) -> bool:
-    """Offer ``keryx_tour`` to Keryx's sessions. False when this Hermes can't take plugin tools."""
+    """Offer ``keryx_tour`` to Keryx's sessions, and the prompt note that tells the agent to use it.
+    False when this Hermes can't take plugin tools."""
     register = getattr(ctx, "register_tool", None)
     if register is None:
         return False
@@ -339,7 +368,14 @@ def register_tool(ctx, base_url: str, token: Callable[[], str]) -> bool:
             handler=make_handler(TourBridge(base_url, token)), check_fn=offered,
             description=SCHEMA["description"], emoji="🧭",
         )
-        return True
     except Exception:
         logger.warning("keryx-stream: could not register the keryx_tour tool", exc_info=True)
         return False
+    add_section = getattr(ctx, "register_system_prompt_section", None)
+    if add_section is not None:
+        try:
+            add_section(SECTION_ID, section, position="after_memory", max_chars=SECTION_MAX_CHARS)
+        except Exception:
+            logger.warning("keryx-stream: could not register the '%s' prompt section", SECTION_ID,
+                           exc_info=True)
+    return True

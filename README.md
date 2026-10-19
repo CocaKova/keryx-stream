@@ -39,7 +39,7 @@ cd keryx-stream
 ./install.sh            # symlinks the package into ~/.hermes/plugins/ (or --copy)
 hermes plugins enable keryx-stream
 hermes gateway restart
-curl -s localhost:8646/keryx/health    # {"ok": true, "version": "0.6.0", "features": [...]}
+curl -s localhost:8646/keryx/health    # {"ok": true, "version": "0.6.1", "features": [...]}
 ```
 
 `install.sh` honors `HERMES_HOME` and prints the config block and the token you still need to set.
@@ -115,6 +115,9 @@ sessions, so the plugin offers the same tour as `keryx_tour`: the same actions (
 `start`, `next`, `prev`, `stop`), the same argument checks and the same deadlines (a 10 s probe
 per session, then 45 s).
 It needs Keryx 3.0 or later; with an older app open, the first call times out at the probe.
+Hermes's tool search lists plugin tools as deferred, so the plugin also adds a short note to
+Keryx sessions' system prompt (`keryx.tour`) telling the agent to show the way with `keryx_tour`
+rather than describe it.
 
 - **How a call reaches the phone.** The gateway already sends every client a `tool.start` event
   with the call's id and arguments. Keryx runs the action in its tour engine and posts the outcome
@@ -358,7 +361,7 @@ What the hooks cannot feed, and the hook Hermes would need for each, is in [GAPS
 <summary><code>/keryx/health</code>: features and hints</summary>
 
 ```json
-{"ok": true, "plugin": "keryx-stream", "version": "0.6.0", "requires_hermes": ">=0.21.3",
+{"ok": true, "plugin": "keryx-stream", "version": "0.6.1", "requires_hermes": ">=0.21.3",
  "features": ["stream", "stream.chat_key", "publish", "toolsets", "reasoning", "interim",
               "tools", "tools.diff", "segment", "stop.turn", "usage", "thinking", "..."],
  "hints": [{"key": "compression.progress_notices", "value": true, "why": "..."}]}

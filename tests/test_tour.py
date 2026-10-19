@@ -270,3 +270,42 @@ async def test_the_bridge_reads_a_real_link():
                               json={"session_id": "s9", "call_id": "c9", "result": {"success": True, "steps": 4}})
         assert r.status == 200
         assert json.loads(await asking) == {"success": True, "steps": 4}
+
+
+# ---- telling the agent ----------------------------------------------------------------------------
+
+class _Ctx:
+    def __init__(self, sections=True):
+        self.tools, self.sections = {}, {}
+        if not sections:
+            self.register_system_prompt_section = None
+
+    def register_tool(self, name, **kw):
+        self.tools[name] = kw
+
+    def register_system_prompt_section(self, section_id, content, **kw):
+        self.sections[section_id] = (content, kw)
+
+
+def test_a_deferred_listing_still_says_what_the_tool_is_for():
+    # Tool search lists a deferred tool by name and the first ~60 characters of its description.
+    assert tour.SCHEMA["description"].startswith("Show the user where something is in the Keryx")
+
+
+def test_the_tool_comes_with_a_note_for_keryx_sessions_only():
+    ctx = _Ctx()
+    assert tour.register_tool(ctx, "http://127.0.0.1:8646", lambda: "k")
+    assert "keryx_tour" in ctx.tools
+    render, kw = ctx.sections[tour.SECTION_ID]
+    assert kw["position"] == "after_memory"
+    assert len(tour.SECTION_TEXT) <= kw["max_chars"]
+    assert render({"platform": "tui"}) == tour.SECTION_TEXT
+    for platform in ("matrix", "telegram", "api_server", "cli", "desktop", ""):
+        assert render({"platform": platform}) == ""
+    assert "keryx_tour" in tour.SECTION_TEXT and "tool_describe" in tour.SECTION_TEXT
+
+
+def test_a_hermes_without_prompt_sections_still_gets_the_tool():
+    ctx = _Ctx(sections=False)
+    assert tour.register_tool(ctx, "http://127.0.0.1:8646", lambda: "k")
+    assert "keryx_tour" in ctx.tools and not ctx.sections
