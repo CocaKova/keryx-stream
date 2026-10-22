@@ -50,6 +50,10 @@ errored). This leaves out:
 Needed: an observer hook for `_emit_status_kind` (kind, message, origin), plus a
 `compression_start` / `compression_end` pair around `_compress_context`.
 
+> Note (keryx-stream 0.7.0): Hermes v0.22.3 added a `post_compaction` plugin hook (#118382,
+> `hermes_cli/plugins.py`, fired once per committed compaction). It is not used here yet and may
+> close the compaction part of this gap; to be checked against the next release.
+
 ### 2. Subagent wing detail
 
 `subagent_start` (`tools/delegate_tool.py:330`) and `subagent_stop`

@@ -17,6 +17,10 @@ is fully decoupled. Routes:
        answer. Master key only.
   GET  /keryx/toolsets?platform=<p>             — toolset view for the platform.
   PUT  /keryx/toolsets/{name}                   — toggle one toolset.
+  GET  /keryx/update/channel                    — the install's update channel
+       (stable releases or every change on main) and where it stands
+       (update_channel.py).
+  PUT  /keryx/update/channel                    — switch it: {"channel", "stay"}.
   GET  /keryx/health                            — liveness + version + the
        DERIVED feature list (version.features) + config ``hints``, so the app
        can tell a missing panel from an old plugin and an operator sees which
@@ -39,6 +43,7 @@ import logging
 
 from . import pairing, tour
 from . import toolsets as toolsets_mod
+from . import update_channel as update_channel_mod
 from .hub import drain_coalesced, hub
 from .pairing import DeviceTokens
 from .probe import probe
@@ -46,6 +51,10 @@ from .scope import make_scope_middleware
 from .version import REQUIRES_HERMES, __version__, features
 
 logger = logging.getLogger("keryx_stream.server")
+
+# A release lookup (GitHub / the channel records, a remote branch tip) that takes
+# longer than this answers with the channel facts alone and says it couldn't check.
+UPDATE_CHECK_TIMEOUT_S = 30.0
 
 
 def _panels_key():
@@ -92,9 +101,10 @@ def build_app(config) -> object:
         return _unauthorized(web)
 
     async def handle_health(request):
+        update_channel_ok = await asyncio.to_thread(update_channel_mod.supported)
         feats = await asyncio.to_thread(
             features, panel_features=request.app[_PANELS_KEY],
-            proxy=bool(config.upstream_url), probe=probe)
+            proxy=bool(config.upstream_url), probe=probe, update_channel=update_channel_ok)
         hints = await asyncio.to_thread(probe.hints)
         return web.json_response({
             "ok": True, "plugin": "keryx-stream", "version": __version__,
@@ -188,6 +198,58 @@ def build_app(config) -> object:
             config.toolsets_forbidden,
         )
         return web.json_response(payload, status=status)
+
+    def _no_channels():
+        return web.json_response(
+            {"error": "unsupported", "message": "This Hermes has no per-install update channel."},
+            status=404)
+
+    async def _channel_status() -> web.Response:
+        try:
+            payload = await asyncio.wait_for(
+                asyncio.to_thread(update_channel_mod.status), timeout=UPDATE_CHECK_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            payload = await asyncio.to_thread(update_channel_mod.status, offline=True)
+            if payload["can_set"]:
+                payload["message"] = "Couldn't reach the update source in time. Try again."
+        return web.json_response(payload, headers={"Cache-Control": "no-store"})
+
+    async def handle_update_channel_get(request: web.Request) -> web.Response:
+        auth_err = check_auth(request)
+        if auth_err is not None:
+            return auth_err
+        if not await asyncio.to_thread(update_channel_mod.supported):
+            return _no_channels()
+        if request.query.get("force", "").lower() in ("1", "true", "yes"):
+            try:
+                payload = await asyncio.wait_for(
+                    asyncio.to_thread(update_channel_mod.status, force=True),
+                    timeout=UPDATE_CHECK_TIMEOUT_S)
+                return web.json_response(payload, headers={"Cache-Control": "no-store"})
+            except asyncio.TimeoutError:
+                pass
+        return await _channel_status()
+
+    async def handle_update_channel_put(request: web.Request) -> web.Response:
+        auth_err = check_auth(request)
+        if auth_err is not None:
+            return auth_err
+        if not await asyncio.to_thread(update_channel_mod.supported):
+            return _no_channels()
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        channel = body.get("channel") if isinstance(body, dict) else None
+        if channel not in update_channel_mod.CHANNELS:
+            return web.json_response({"error": "bad_channel"}, status=400)
+        try:
+            await asyncio.to_thread(update_channel_mod.switch, channel, body.get("stay") is True)
+        except update_channel_mod.NotSettable as exc:
+            return web.json_response({"error": "not_settable", "message": str(exc)}, status=409)
+        except update_channel_mod.BadChannel:
+            return web.json_response({"error": "bad_channel"}, status=400)
+        return await _channel_status()
 
     async def handle_publish(request: web.Request) -> web.Response:
         auth_err = check_auth(request, master_only=True)
@@ -295,6 +357,8 @@ def build_app(config) -> object:
     app.router.add_get("/keryx/tour/wait", handle_tour_wait)
     app.router.add_get("/keryx/toolsets", handle_toolsets_get)
     app.router.add_put("/keryx/toolsets/{name}", handle_toolset_put)
+    app.router.add_get("/keryx/update/channel", handle_update_channel_get)
+    app.router.add_put("/keryx/update/channel", handle_update_channel_put)
     if config.panels:
         # The panels lean on Hermes internals; the stream must not go down with
         # them if a Hermes release moves something they import.

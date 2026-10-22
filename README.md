@@ -39,7 +39,7 @@ cd keryx-stream
 ./install.sh            # symlinks the package into ~/.hermes/plugins/ (or --copy)
 hermes plugins enable keryx-stream
 hermes gateway restart
-curl -s localhost:8646/keryx/health    # {"ok": true, "version": "0.6.1", "features": [...]}
+curl -s localhost:8646/keryx/health    # {"ok": true, "version": "0.7.0", "features": [...]}
 ```
 
 `install.sh` honors `HERMES_HOME` and prints the config block and the token you still need to set.
@@ -352,6 +352,7 @@ What the hooks cannot feed, and the hook Hermes would need for each, is in [GAPS
 | `POST /keryx/sessions/prune` | preview or prune old sessions |
 | `/keryx/pet*` | companion pet: active, gallery, select, thumbnail |
 | `GET`/`POST /keryx/update*` | commits-behind count; run the update command |
+| `GET`/`PUT /keryx/update/channel` | the install's update channel (published releases, or every change on `main`) and where it stands; switch it with `{"channel", "stay"}` (see below) |
 | `/keryx/git/*` | Shipyard: repos, status, diff review, stage, commit, push |
 | anything else | relayed to the native API server (`/health`, `/v1/*`, `/api/*` …) |
 
@@ -361,7 +362,7 @@ What the hooks cannot feed, and the hook Hermes would need for each, is in [GAPS
 <summary><code>/keryx/health</code>: features and hints</summary>
 
 ```json
-{"ok": true, "plugin": "keryx-stream", "version": "0.6.1", "requires_hermes": ">=0.21.3",
+{"ok": true, "plugin": "keryx-stream", "version": "0.7.0", "requires_hermes": ">=0.21.3",
  "features": ["stream", "stream.chat_key", "publish", "toolsets", "reasoning", "interim",
               "tools", "tools.diff", "segment", "stop.turn", "usage", "thinking", "..."],
  "hints": [{"key": "compression.progress_notices", "value": true, "why": "..."}]}
@@ -387,8 +388,40 @@ uses the list to tell "this install cannot do that" from "that is broken".
 | `prompt.markers` | the marker prompt sections registered (see [Teaching your agent Keryx's formatting](#teaching-your-agent-keryxs-formatting)) |
 | `kanban.run_sessions` | always with the kanban routes: each run in a task detail carries `session_id` (its worker's Hermes session, or `null`) |
 | panel names, `proxy` | the panel routes mounted; the relay is on |
+| `update_channel` | this Hermes keeps a per-install update channel (`hermes_cli/update_channel.py`) |
 
 `hints` lists the Hermes config knobs that are still off, each with a reason.
+
+</details>
+
+<details>
+<summary><code>/keryx/update/channel</code>: stable releases or every change</summary>
+
+Hermes keeps an update channel per install (`update.installs.<id>` in `config.yaml`) and `hermes update`
+and the dashboard's update check follow it. Desktop switches it locally with
+`hermes update --set-channel`; nothing over HTTP could, so this route does it through Hermes' own
+functions.
+
+```json
+GET  {"channel": "stable", "default": "stable", "forward_only": true, "can_set": true,
+      "stable_version": "0.22.4", "behind": 0, "ahead_of_stable": true,
+      "message": "This build is newer than stable v0.22.4. You'll get the next stable release."}
+PUT  {"channel": "main", "stay": false}   → the same shape, after the switch
+```
+
+- `stable` follows published releases; `main` follows every change as it lands.
+- An install with no saved channel whose default is `stable` (an official source checkout) rides it
+  **forward-only**: a checkout newer than the latest release waits for the next one and is never moved
+  back. `PUT {"channel": "stable", "stay": true}` returns to that state by removing the saved channel.
+  `"stay": false` saves `stable` explicitly, which is Hermes' consent to move back to the latest release
+  on the next update. A fork or mirror defaults to `main`, so there `stay: true` answers 409.
+- `behind`: changes waiting on the current channel; `-1` means updates exist but the count is unknown,
+  `null` that the check could not run.
+- 409 `{"error": "not_settable", "message": ...}`: channels don't apply to this install (an app bundle,
+  an install owned by a package manager or container image, anything that isn't a git checkout).
+  400 `{"error": "bad_channel"}`: anything but `stable` or `main`. 404: this Hermes has no update channels.
+- GET writes nothing Hermes reads: release lookups use the plugin's own cache file. A lookup slower
+  than 30 s answers with the channel facts alone. Add `?force=1` to skip the cache.
 
 </details>
 

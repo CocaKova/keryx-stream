@@ -10,7 +10,7 @@ turn the first into the second.
 """
 from __future__ import annotations
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 
 # Oldest Hermes whose plugin surface this release relies on: the streaming
 # observer hooks with ``turn_id``/``iteration`` in their payloads
@@ -27,13 +27,16 @@ REQUIRES_HERMES = ">=0.21.3"
 CORE_FEATURES = ("stream", "stream.chat_key", "publish", "toolsets", "pair", "tour")
 
 
-def features(*, panel_features=(), proxy: bool = False, probe=None) -> list[str]:
+def features(*, panel_features=(), proxy: bool = False, probe=None,
+             update_channel: bool = False) -> list[str]:
     """The feature list for /keryx/health.
 
     ``panel_features`` is what ``panels.register_panel_routes`` actually mounted
     (empty when the panels could not load); ``probe`` is the process's
     :class:`keryx_stream.probe.Probe`, which knows which hooks registered, which
-    payload fields have been seen and which events were fed.
+    payload fields have been seen and which events were fed. ``update_channel``
+    is :func:`keryx_stream.update_channel.supported`: this Hermes keeps a
+    per-install update channel the app can read and switch.
     """
     out = list(CORE_FEATURES)
     if probe is not None:
@@ -41,4 +44,6 @@ def features(*, panel_features=(), proxy: bool = False, probe=None) -> list[str]
     out += [f for f in panel_features if f not in out]
     if proxy:
         out.append("proxy")
+    if update_channel:
+        out.append("update_channel")
     return out
