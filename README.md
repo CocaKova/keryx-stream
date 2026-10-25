@@ -344,7 +344,7 @@ What the hooks cannot feed, and the hook Hermes would need for each, is in [GAPS
 | `GET`/`PUT /keryx/toolsets[/{name}]` | toolset view and toggle for a platform |
 | `GET /keryx/capabilities`, `PUT /keryx/reasoning` | what the active brain accepts on the reasoning dial, and setting it |
 | `GET /keryx/commands` | the gateway's slash-command catalog |
-| `GET`/`PUT /keryx/config`, `/keryx/config/raw` | whitelisted config knobs; the raw file with hash-guarded, backed-up writes |
+| `GET`/`PUT /keryx/config`, `/keryx/config/raw` | whitelisted config knobs (only those whose setting the running Hermes has); the raw file with hash-guarded, backed-up writes |
 | `GET /keryx/brains`, `GET /keryx/model/options`, `POST /keryx/brain` | model picker; operator-defined brain swaps |
 | `GET /keryx/logs?lines=` | redacted tail of the gateway log |
 | `/keryx/kanban/*` | Missions: board, task detail, create, comment, reply / approve / request-changes, settings, events, notify subscriptions |
