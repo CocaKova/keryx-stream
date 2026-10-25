@@ -93,7 +93,10 @@ async def test_health_reports_derived_features_hints_and_floor():
     async with TestClient(TestServer(app)) as client:
         body = await (await client.get("/keryx/health")).json()
         assert body["requires_hermes"] == REQUIRES_HERMES
-        assert body["features"] == list(CORE_FEATURES)
+        # update_channel is derived too: present exactly when this Hermes has channel records.
+        from keryx_stream import update_channel
+        expected = list(CORE_FEATURES) + (["update_channel"] if update_channel.supported() else [])
+        assert body["features"] == expected
         assert isinstance(body["hints"], list)
         # Something feeds a status frame through the publish route (a forward-mode
         # process, or an operator's shim) — only now is status advertised.
