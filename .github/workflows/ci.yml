@@ -32,15 +32,20 @@ jobs:
         with:
           repository: NousResearch/hermes-agent
           path: hermes-agent
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
-          # hermes-agent declares its dependencies for Python >= 3.14 only; on an older
-          # interpreter `pip install -e ./hermes-agent` installs none and the panel tests skip.
-          python-version: "3.14"
-      - name: Install hermes-agent and the plugin
+          version: "0.12.13"
+      - name: Install hermes-agent from its lockfile, then the plugin
+        # Install Hermes the way it installs itself: from uv.lock, which carries the
+        # [tool.uv] dependency overrides that plain pip ignores (pip cannot resolve
+        # hermes-agent main on its own). Python 3.14 because hermes-agent declares its
+        # dependencies for >= 3.14 only. The venv lives outside the clone.
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/hermes-venv
         run: |
-          pip install -e ./hermes-agent
-          pip install -e '.[dev]'
+          uv sync --frozen --no-dev --python 3.14 --project hermes-agent
+          uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" -e '.[dev]'
+          echo "$UV_PROJECT_ENVIRONMENT/bin" >> "$GITHUB_PATH"
       - name: Tests against hermes-agent main
         env:
           HERMES_AGENT_ROOT: ${{ github.workspace }}/hermes-agent
