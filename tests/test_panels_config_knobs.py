@@ -5,6 +5,11 @@ mode is a silent typo: a knob whose path doesn't exist writes a brand-new key
 that nothing reads, and the app shows a control that does nothing. Validating
 each spec against hermes_cli.config.DEFAULT_CONFIG turns that into a test
 failure instead of a dead switch on the phone.
+
+Hermes also drops settings between versions. A knob whose setting the running
+Hermes no longer has is hidden from the app and refused on write
+(panels._knob_available), so against such a tree the path check verifies that
+guard and reports a skip instead of failing.
 """
 
 import os
@@ -24,26 +29,13 @@ from keryx_stream import panels as ks  # noqa: E402
 
 KNOBS = ks._CONFIG_KNOBS
 
-# Knobs that legitimately do NOT appear in DEFAULT_CONFIG. Each one is listed
-# with the read site that proves the key is real and supplies its fallback, so
-# this stays an audited exception list rather than a hole in the check. A knob
-# added here without a verified read site is a dead switch on the phone —
-# memory.flush_min_turns was exactly that (present in config.yaml, read by
+# Knobs that legitimately do NOT appear in DEFAULT_CONFIG carry `not_in_defaults`
+# in the table, naming the read site that proves the key is real and supplies its
+# fallback, so this stays an audited exception list rather than a hole in the
+# check. A knob excused without a verified read site is a dead switch on the
+# phone: memory.flush_min_turns was exactly that (present in config.yaml, read by
 # nothing) and was dropped instead of being excused.
-_NOT_IN_DEFAULTS = {
-    # dynamic profile enums — value space is the routing map, not the defaults
-    "missions_default_assignee",
-    "missions_orchestrator",
-    # display.get("tool_progress", "all")
-    "tool_progress",
-    # _cleanup_inactive_envs(lifetime_seconds: int = 300)
-    "terminal_lifetime",
-    # skills.get("creation_nudge_interval", 10)
-    "skills_creation_nudge",
-    # agent.max_turns ships UNSET = no limit (config.resolve_turn_limit); an int
-    # knob can't say "unlimited", so an unset key reads as the ceiling
-    "max_turns",
-}
+_NOT_IN_DEFAULTS = {key for key, spec in KNOBS.items() if spec.get("not_in_defaults")}
 
 
 def _resolve(spec):
@@ -54,6 +46,31 @@ def _resolve(spec):
     return node
 
 
+def _resolve_or_skip(spec):
+    try:
+        return _resolve(spec)
+    except (KeyError, TypeError):
+        pytest.skip("not in this Hermes' DEFAULT_CONFIG; the knob is hidden from the app")
+
+
+def _assert_hidden_and_refused(key):
+    """A knob for a setting this Hermes lacks must not reach the phone or config.yaml."""
+    import hermes_cli.config as hc
+
+    saved = {}
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(hc, "load_config", lambda: {})
+        mp.setattr(hc, "save_config", lambda cfg: saved.update(cfg))
+        shown = {k["key"] for k in ks.config_knobs_snapshot()["knobs"]}
+        assert key not in shown, f"{key} is offered but this Hermes has no such setting"
+        status, _ = ks.config_knob_set(key, KNOBS[key]["default"])
+        assert status == 400, f"{key} was written although this Hermes has no such setting"
+        assert not saved
+    finally:
+        mp.undo()
+
+
 @pytest.mark.parametrize("key", sorted(KNOBS))
 def test_every_knob_points_at_a_real_config_path(key):
     spec = KNOBS[key]
@@ -62,9 +79,10 @@ def test_every_knob_points_at_a_real_config_path(key):
     try:
         _resolve(spec)
     except (KeyError, TypeError):
-        pytest.fail(
-            f"knob '{key}' points at {spec['section']}.{'.'.join(spec['path'])} "
-            "which does not exist in Hermes' DEFAULT_CONFIG"
+        _assert_hidden_and_refused(key)
+        pytest.skip(
+            f"{spec['section']}.{'.'.join(spec['path'])} is not in this Hermes' "
+            "DEFAULT_CONFIG; the knob is hidden from the app"
         )
 
 
@@ -73,7 +91,7 @@ def test_declared_kind_matches_the_real_default_type(key):
     spec = KNOBS[key]
     if key in _NOT_IN_DEFAULTS:
         pytest.skip("knob targets a Keryx-managed section")
-    actual = _resolve(spec)
+    actual = _resolve_or_skip(spec)
     kind = spec["kind"]
     if kind == "bool":
         assert isinstance(actual, bool), f"{key}: declared bool, default is {actual!r}"
@@ -96,7 +114,7 @@ def test_declared_default_matches_hermes_default(key):
     spec = KNOBS[key]
     if key in _NOT_IN_DEFAULTS:
         pytest.skip("knob targets a Keryx-managed section")
-    actual = _resolve(spec)
+    actual = _resolve_or_skip(spec)
     declared = spec["default"]
     if spec["kind"] == "float":
         assert float(declared) == pytest.approx(float(actual)), key
@@ -122,6 +140,10 @@ def test_spec_shape_is_complete(key):
         assert spec["choices"] == [c.lower() for c in spec["choices"]], (
             f"{key}: static enum choices must be lowercase — config_knob_set "
             "lowercases what the phone sends before matching"
+        )
+    if "not_in_defaults" in spec:
+        assert isinstance(spec["not_in_defaults"], str) and spec["not_in_defaults"].strip(), (
+            f"{key}: not_in_defaults must name the read site that proves the key is real"
         )
 
 
@@ -175,3 +197,34 @@ def test_knob_count_and_grouping():
         "Memory", "Skills", "Delegation", "Voice", "Safety",
     ):
         assert expected in groups, f"missing group {expected}"
+
+
+def test_knobs_follow_the_settings_the_running_hermes_has(monkeypatch):
+    """Drop a setting from the defaults: its knob leaves the snapshot and its
+    writes are refused; knobs excused by not_in_defaults and unknown defaults
+    keep everything."""
+    import copy
+
+    import hermes_cli.config as hc
+
+    saved = {}
+    monkeypatch.setattr(hc, "load_config", lambda: {})
+    monkeypatch.setattr(hc, "save_config", lambda cfg: saved.update(cfg))
+    monkeypatch.setattr(
+        ks, "_toolsets_env_set", lambda *_a, **_kw: set(), raising=False
+    )
+
+    defaults = copy.deepcopy(DEFAULTS)
+    defaults["browser"] = {
+        k: v for k, v in (defaults.get("browser") or {}).items() if k != "dialog_policy"
+    }
+    monkeypatch.setattr(ks, "_hermes_defaults", lambda: defaults)
+    shown = {k["key"] for k in ks.config_knobs_snapshot()["knobs"]}
+    assert "browser_dialog_policy" not in shown
+    assert _NOT_IN_DEFAULTS <= shown
+    assert ks.config_knob_set("browser_dialog_policy", "auto_dismiss")[0] == 400
+    assert not saved
+
+    monkeypatch.setattr(ks, "_hermes_defaults", lambda: None)
+    shown = {k["key"] for k in ks.config_knobs_snapshot()["knobs"]}
+    assert shown == set(KNOBS)

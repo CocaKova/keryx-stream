@@ -1741,6 +1741,10 @@ def sessions_prune(
 # tail, and a config-driven brain picker. Everything persists through hermes'
 # own config helpers; secrets/.env are structurally out of reach because the
 # keys are whitelisted here, never taken from the request.
+#
+# A knob is offered only while the running Hermes still has its setting (see
+# _knob_available). Knobs whose key is real but absent from DEFAULT_CONFIG by
+# design carry `not_in_defaults` naming the read site that proves it.
 # ---------------------------------------------------------------------------
 
 _CONFIG_KNOBS: dict[str, dict[str, Any]] = {
@@ -1754,6 +1758,7 @@ _CONFIG_KNOBS: dict[str, dict[str, Any]] = {
     "max_turns": {
         "section": "agent", "path": ["max_turns"], "kind": "int", "min": 1, "max": 500, "default": 500,
         "applies": "next session", "label": "Max turns", "group": "Behavior",
+        "not_in_defaults": "agent.max_turns ships unset (config.resolve_turn_limit)",
         # Hermes ships this key UNSET = no limit (config.resolve_turn_limit). An int
         # knob has no "unlimited" position, so an unset key reads as the ceiling.
         "description": "How many agent turns one task may take before it must wrap up. "
@@ -1790,6 +1795,7 @@ _CONFIG_KNOBS: dict[str, dict[str, Any]] = {
         "section": "display", "path": ["tool_progress"], "kind": "enum",
         "choices": ["off", "new", "all", "verbose"], "default": "all",
         "applies": "next turn", "label": "Tool progress", "group": "Display",
+        "not_in_defaults": 'display.get("tool_progress", "all")',
         "description": "Which tool calls narrate while the agent works.",
     },
     "compact": {
@@ -1832,12 +1838,14 @@ _CONFIG_KNOBS: dict[str, dict[str, Any]] = {
         "section": "kanban", "path": ["default_assignee"], "kind": "enum",
         "choices_dynamic": "profiles", "default": "",
         "applies": "next dispatch tick", "label": "Default assignee", "group": "Missions",
+        "not_in_defaults": "profile enum: the value space is the routing map, not the defaults",
         "description": "Which agent profile picks up missions that don't name one (blank = the dispatcher decides).",
     },
     "missions_orchestrator": {
         "section": "kanban", "path": ["orchestrator_profile"], "kind": "enum",
         "choices_dynamic": "profiles", "default": "",
         "applies": "next dispatch tick", "label": "Orchestrator", "group": "Missions",
+        "not_in_defaults": "profile enum: the value space is the routing map, not the defaults",
         "description": "Profile that runs decompose/triage passes (blank = default brain).",
     },
     # -- Compression ---------------------------------------------------------
@@ -1954,6 +1962,7 @@ _CONFIG_KNOBS: dict[str, dict[str, Any]] = {
         "section": "terminal", "path": ["lifetime_seconds"], "kind": "int",
         "min": 30, "max": 7200, "default": 300,
         "applies": "next session", "label": "Shell lifetime", "group": "Terminal",
+        "not_in_defaults": "_cleanup_inactive_envs(lifetime_seconds: int = 300)",
         "description": "Seconds an idle persistent shell is kept before being recycled.",
     },
     # -- Browser -------------------------------------------------------------
@@ -2038,6 +2047,7 @@ _CONFIG_KNOBS: dict[str, dict[str, Any]] = {
         "section": "skills", "path": ["creation_nudge_interval"], "kind": "int",
         "min": 0, "max": 100, "default": 10,
         "applies": "next session", "label": "Creation nudge", "group": "Skills",
+        "not_in_defaults": 'skills.get("creation_nudge_interval", 10)',
         "description": "Turns between reminders that a repeated task could become a skill (0 = never).",
     },
     "curator_enabled": {
@@ -2186,6 +2196,32 @@ def _knob_value(cfg: dict, spec: dict[str, Any]) -> Any:
     return node.get(spec["path"][-1]) if isinstance(node, dict) else None
 
 
+def _hermes_defaults() -> dict | None:
+    """The running Hermes' DEFAULT_CONFIG, or None when it can't be read."""
+    try:
+        from hermes_cli.config import DEFAULT_CONFIG
+    except Exception:
+        return None
+    return DEFAULT_CONFIG if isinstance(DEFAULT_CONFIG, dict) else None
+
+
+def _knob_available(spec: dict[str, Any], defaults: dict | None) -> bool:
+    """Whether the running Hermes still has the setting this knob writes.
+
+    Hermes drops settings between versions (browser.record_sessions left main
+    with the built-in browser tools); a knob for one it no longer has would
+    write a key nothing reads. Unknown defaults keep every knob.
+    """
+    if defaults is None or spec.get("not_in_defaults"):
+        return True
+    node: Any = defaults.get(spec["section"])
+    for part in spec["path"]:
+        if not isinstance(node, dict) or part not in node:
+            return False
+        node = node[part]
+    return True
+
+
 def _config_locked() -> set:
     """Knob keys the operator has frozen: `keryx_stream.config_locked` in
     config.yaml (non-secret settings live there, not in the environment)."""
@@ -2201,8 +2237,11 @@ def config_knobs_snapshot() -> dict:
 
     cfg = load_config()
     locked = _config_locked()
+    defaults = _hermes_defaults()
     knobs = []
     for key, spec in _CONFIG_KNOBS.items():
+        if not _knob_available(spec, defaults):
+            continue
         value = _knob_value(cfg, spec)
         if value is None:
             value = spec["default"]
@@ -2227,6 +2266,8 @@ def config_knob_set(key: Any, value: Any) -> tuple[int, dict]:
     spec = _CONFIG_KNOBS.get(str(key or ""))
     if spec is None:
         return 400, {"error": {"message": f"unknown config key '{key}'"}}
+    if not _knob_available(spec, _hermes_defaults()):
+        return 400, {"error": {"message": f"'{key}' is not a setting in this Hermes version"}}
     if str(key) in _config_locked():
         return 403, {"error": {"message": f"'{key}' is locked by the operator"}}
     kind = spec["kind"]
